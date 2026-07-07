@@ -170,6 +170,30 @@ async def test_camera_image_returns_none(hass: HomeAssistant, mock_config_entry,
         
         # Получаем snapshot
         image = await camera_entity.async_camera_image()
-        
+
         # Для HLS потоков статичное изображение не поддерживается
         assert image is None
+
+
+async def test_camera_use_stream_for_stills(hass: HomeAssistant, mock_config_entry, mock_cameras_data, mock_camera_details):
+    """Тест, что превью-кадры генерируются из HLS-потока."""
+    mock_config_entry.add_to_hass(hass)
+
+    hass.data[DOMAIN] = {
+        mock_config_entry.entry_id: {
+            "token_manager": MagicMock(ensure_valid_token=AsyncMock(return_value=True), access_token="test_token")
+        }
+    }
+
+    with patch("custom_components.rosdomofon.camera._fetch_cameras", return_value=mock_cameras_data), \
+         patch("custom_components.rosdomofon.camera._fetch_camera_details", return_value=mock_camera_details):
+
+        from custom_components.rosdomofon.camera import async_setup_entry
+
+        entities = []
+        await async_setup_entry(hass, mock_config_entry, lambda e: entities.extend(e))
+
+        camera_entity = entities[0]
+
+        # HA должен генерировать превью из потока, а не через статичный снимок
+        assert camera_entity.use_stream_for_stills is True

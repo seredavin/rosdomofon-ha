@@ -145,6 +145,16 @@ class RosdomofonCamera(Camera):
         self._attr_brand = "Росдомофон"
         self._attr_model = camera_data.get("model", "Unknown")
 
+    @property
+    def use_stream_for_stills(self) -> bool:
+        """Разрешить HA генерировать превью-кадры из HLS-потока.
+
+        Иначе карточка камеры показывает статичный снимок через async_camera_image,
+        который для HLS не поддерживается и отдаёт None — карточка выводит «Недоступно»,
+        пока пользователь не откроет живой просмотр.
+        """
+        return True
+
     async def async_camera_image(
         self, width: int | None = None, height: int | None = None
     ) -> bytes | None:
