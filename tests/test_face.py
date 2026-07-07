@@ -132,6 +132,11 @@ async def test_coordinator_unlocks_on_match(hass: HomeAssistant):
     assert len(calls) == 1
     assert calls[0].data["entity_id"] == "lock.dver"
     assert coord.last_person == "Alice"
+    # Кадр распознанного лица сохранён для ленты активности
+    assert coord.last_recognized_image == b"frame"
+    assert coord.last_recognized_name == "Alice"
+    assert coord.last_recognized_camera == "camera.podezd"
+    assert coord.last_recognized_at is not None
 
 
 @pytest.mark.asyncio
@@ -182,6 +187,50 @@ async def test_coordinator_no_match_does_not_unlock(hass: HomeAssistant):
         await hass.async_block_till_done()
 
     assert len(calls) == 0
+    # Нераспознанное лицо сохранено в ленту как «неизвестное»
+    assert coord.last_unknown_image == b"frame"
+    assert coord.last_unknown_camera == "camera.podezd"
+    assert coord.last_unknown_at is not None
+
+
+@pytest.mark.asyncio
+async def test_coordinator_no_face_not_recorded(hass: HomeAssistant):
+    """Пустой кадр (лицо не найдено) не должен попадать в ленту."""
+    face_store = MagicMock()
+    coord = _coordinator(hass, face_store)
+    _track_unlock(hass)
+
+    image = MagicMock(content=b"frame")
+    with patch("custom_components.rosdomofon.face_unlock.async_get_image", AsyncMock(return_value=image)), \
+         patch("custom_components.rosdomofon.deepface_client.represent", return_value=[]):
+        await coord._process_camera("camera.podezd", "lock.dver")
+        await hass.async_block_till_done()
+
+    assert coord.last_unknown_image is None
+    face_store.match.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_coordinator_unknown_cooldown(hass: HomeAssistant):
+    """Повторное неизвестное лицо внутри кулдауна не создаёт новую запись."""
+    face_store = MagicMock()
+    face_store.match.return_value = None
+    coord = _coordinator(hass, face_store)
+    events: list = []
+    hass.bus.async_listen("rosdomofon_face_unknown", lambda e: events.append(e))
+
+    first = MagicMock(content=b"frame1")
+    second = MagicMock(content=b"frame2")
+    with patch("custom_components.rosdomofon.deepface_client.represent", return_value=[[1.0, 0.0]]):
+        with patch("custom_components.rosdomofon.face_unlock.async_get_image", AsyncMock(return_value=first)):
+            await coord._process_camera("camera.podezd", "lock.dver")
+        with patch("custom_components.rosdomofon.face_unlock.async_get_image", AsyncMock(return_value=second)):
+            await coord._process_camera("camera.podezd", "lock.dver")
+        await hass.async_block_till_done()
+
+    # Второй кадр в пределах кулдауна проигнорирован — остаётся первый
+    assert coord.last_unknown_image == b"frame1"
+    assert len(events) == 1
 
 
 @pytest.mark.asyncio

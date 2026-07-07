@@ -70,3 +70,19 @@ FACE_STORE_VERSION = 1
 # Данные распознавания в hass.data[DOMAIN]
 DATA_FACE_STORE = "_face_store"
 DATA_FACE_COORDINATOR = "_face_coordinator"
+
+# ---------------------------------------------------------------------------
+# Лента активности лиц (события Логбука + image-сущности с кадрами)
+# ---------------------------------------------------------------------------
+
+# События на шине HA — попадают в Логбук (ленту активности)
+EVENT_FACE_RECOGNIZED = f"{DOMAIN}_face_recognized"
+EVENT_FACE_UNKNOWN = f"{DOMAIN}_face_unknown"
+
+# Стабильные entity_id image-сущностей с последними кадрами.
+# Задаём явно, чтобы события Логбука ссылались на конкретную сущность
+# (иначе HA сгенерировал бы id из кириллического имени).
+IMAGE_RECOGNIZED_OBJECT_ID = "rosdomofon_last_recognized_face"
+IMAGE_UNKNOWN_OBJECT_ID = "rosdomofon_last_unknown_face"
+IMAGE_RECOGNIZED_ENTITY_ID = f"image.{IMAGE_RECOGNIZED_OBJECT_ID}"
+IMAGE_UNKNOWN_ENTITY_ID = f"image.{IMAGE_UNKNOWN_OBJECT_ID}"

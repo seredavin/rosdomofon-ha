@@ -22,7 +22,7 @@ from .token_manager import TokenManager
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[str] = ["lock", "button", "camera", "switch", "sensor"]
+PLATFORMS: list[str] = ["lock", "button", "camera", "switch", "sensor", "image"]
 
 # Схема сервиса генерации гостевой ссылки
 SERVICE_GENERATE_LINK = "generate_share_link"

@@ -9,11 +9,14 @@
 import logging
 from datetime import timedelta
 
+from datetime import datetime
+
 from homeassistant.components import persistent_notification
 from homeassistant.components.camera import async_get_image
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.util import dt as dt_util
 
 from . import deepface_client
 from .const import (
@@ -32,6 +35,8 @@ from .const import (
     DEFAULT_MODEL,
     DEFAULT_THRESHOLD,
     DOMAIN,
+    EVENT_FACE_RECOGNIZED,
+    EVENT_FACE_UNKNOWN,
 )
 from .face_store import FaceStore
 
@@ -55,11 +60,23 @@ class FaceUnlockCoordinator:
         self._unsub = None
         self._busy: set[str] = set()
         self._cooldown_until: dict[str, float] = {}
+        # Отдельный кулдаун на запись кадров неизвестных лиц, чтобы не засорять ленту
+        self._unknown_cooldown_until: dict[str, float] = {}
         self._enabled: dict[str, bool] = {}
         # Один раз предупреждаем, если антиспуфинг недоступен (нет torch)
         self._antispoof_warned = False
         # Последнее распознавание (для sensor)
         self.last_person: str | None = None
+
+        # Последние кадры для ленты активности (image-сущности).
+        # Кадры держим в памяти — при перезапуске HA история кадров очищается.
+        self.last_recognized_image: bytes | None = None
+        self.last_recognized_at: datetime | None = None
+        self.last_recognized_name: str | None = None
+        self.last_recognized_camera: str | None = None
+        self.last_unknown_image: bytes | None = None
+        self.last_unknown_at: datetime | None = None
+        self.last_unknown_camera: str | None = None
 
         self._apply_options(options)
 
@@ -180,6 +197,10 @@ class FaceUnlockCoordinator:
                 _LOGGER.debug("%s: ошибка DeepFace: %s", camera, exc)
                 return
 
+            # Лицо на кадре не найдено — в ленту ничего не пишем.
+            if not embeddings:
+                return
+
             match = None
             for embedding in embeddings:
                 candidate = self._face_store.match(embedding, self._threshold)
@@ -187,20 +208,49 @@ class FaceUnlockCoordinator:
                     match = candidate
 
             if match is None:
+                self._handle_unknown(camera, image.content)
                 return
 
             name, distance = match
-            await self._unlock(camera, lock, name, distance)
+            await self._unlock(camera, lock, name, distance, image.content)
         finally:
             self._busy.discard(camera)
 
+    @callback
+    def _handle_unknown(self, camera: str, image_bytes: bytes) -> None:
+        """Сохраняет кадр нераспознанного лица в ленту активности.
+
+        Работает с кулдауном на камеру, чтобы одно и то же неизвестное лицо
+        не порождало запись в ленте на каждом кадре.
+        """
+        now = self._hass.loop.time()
+        if now < self._unknown_cooldown_until.get(camera, 0):
+            return
+        self._unknown_cooldown_until[camera] = now + self._cooldown
+
+        self.last_unknown_image = image_bytes
+        self.last_unknown_at = dt_util.utcnow()
+        self.last_unknown_camera = camera
+        async_dispatcher_send(self._hass, SIGNAL_FACE_UPDATE)
+        self._hass.bus.async_fire(EVENT_FACE_UNKNOWN, {"camera": camera})
+
+        _LOGGER.info("Обнаружено неизвестное лицо на %s", camera)
+
     async def _unlock(
-        self, camera: str, lock: str, name: str, distance: float
+        self, camera: str, lock: str, name: str, distance: float, image_bytes: bytes
     ) -> None:
-        """Открывает замок и уведомляет пользователя."""
+        """Открывает замок, сохраняет кадр в ленту и уведомляет пользователя."""
         self._cooldown_until[camera] = self._hass.loop.time() + self._cooldown
         self.last_person = name
+        self.last_recognized_image = image_bytes
+        self.last_recognized_at = dt_util.utcnow()
+        self.last_recognized_name = name
+        self.last_recognized_camera = camera
         async_dispatcher_send(self._hass, SIGNAL_FACE_UPDATE)
+        self._hass.bus.async_fire(
+            EVENT_FACE_RECOGNIZED,
+            {"camera": camera, "name": name, "distance": round(distance, 3)},
+        )
 
         _LOGGER.info(
             "Распознан %s (расстояние %.3f) на %s — открываю %s",
