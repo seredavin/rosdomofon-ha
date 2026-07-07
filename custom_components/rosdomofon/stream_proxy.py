@@ -4,110 +4,87 @@
 Перехватывает запросы к HLS и добавляет заголовок Authorization.
 """
 
-import inspect
+import hashlib
+import hmac
 import logging
 import posixpath
 import re
-from datetime import timedelta
+import secrets
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
 import requests
 from aiohttp import web
 from homeassistant.components.http import HomeAssistantView
 from homeassistant.core import HomeAssistant
+
 try:
     from homeassistant.helpers.http import KEY_AUTHENTICATED
 except ImportError:
     # До HA ~2024 константа лежала в components.http.const
     from homeassistant.components.http.const import KEY_AUTHENTICATED
 
-try:
-    from homeassistant.components.http import async_sign_path as _ha_async_sign_path
-except ImportError:
-    try:
-        from homeassistant.components.http.auth import async_sign_path as _ha_async_sign_path
-    except ImportError:
-        _ha_async_sign_path = None
-
-try:
-    from homeassistant.components.http.auth import (
-        async_validate_signed_request as _ha_async_validate_signed_request,
-    )
-except ImportError:
-    _ha_async_validate_signed_request = None
-
-try:
-    from homeassistant.components.http import (
-        async_validate_signed_path as _ha_async_validate_signed_path,
-    )
-except ImportError:
-    try:
-        from homeassistant.components.http.auth import (
-            async_validate_signed_path as _ha_async_validate_signed_path,
-        )
-    except ImportError:
-        _ha_async_validate_signed_path = None
-
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 _HLS_URI_ATTR_RE = re.compile(r'URI="([^"]+)"')
 
-
-async def _sign_path_compat(hass: HomeAssistant, path: str) -> str:
-    """Sign path across HA versions."""
-    if _ha_async_sign_path is None:
-        _LOGGER.warning("Signed-path helper unavailable; stream proxy URL will be unsigned.")
-        return path
-    if "http.auth" not in hass.data:
-        return path
-
-    try:
-        result = _ha_async_sign_path(hass, path, timedelta(minutes=5))
-    except TypeError:
-        result = _ha_async_sign_path(hass, path)
-    except Exception as exc:
-        _LOGGER.warning("Failed to sign path: %s", exc)
-        return path
-
-    if inspect.isawaitable(result):
-        try:
-            return await result
-        except Exception as exc:
-            _LOGGER.warning("Failed to sign path: %s", exc)
-            return path
-    return result
+# Имя query-параметра с собственной подписью прокси
+_SIGN_PARAM = "sig"
+# Ключ, под которым в hass.data хранится секрет подписи
+_PROXY_SECRET_KEY = "_proxy_secret"
 
 
-async def _validate_signed_request_compat(hass: HomeAssistant, request: web.Request) -> bool:
-    """Validate signed request across HA versions."""
+def _get_proxy_secret(hass: HomeAssistant) -> bytes:
+    """Возвращает секрет для подписи прокси-URL, создавая его при первом обращении.
+
+    Секрет живёт в памяти в пределах запуска Home Assistant. Мы намеренно НЕ
+    используем штатную подпись HA (async_sign_path): она имеет короткий срок
+    жизни и завязана на refresh-token, из-за чего запечённый в конфиг go2rtc
+    URL протухает через несколько минут и поток отваливается. Собственная
+    HMAC-подпись не имеет срока и не зависит от внутренних API HA.
+
+    При перезапуске HA заново формирует конфиг go2rtc, вызывая stream_source(),
+    поэтому URL переподписываются новым секретом — рассинхронизации не возникает.
+    """
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    secret = domain_data.get(_PROXY_SECRET_KEY)
+    if secret is None:
+        secret = secrets.token_bytes(32)
+        domain_data[_PROXY_SECRET_KEY] = secret
+    return secret
+
+
+def _compute_signature(secret: bytes, path: str) -> str:
+    """Вычисляет HMAC-SHA256 подпись для пути прокси."""
+    return hmac.new(secret, path.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def sign_proxy_path(hass: HomeAssistant, path: str) -> str:
+    """Подписывает путь прокси собственной HMAC-подписью без срока действия.
+
+    Подписывается только путь (без query); подпись добавляется параметром sig.
+    Query-параметры (например upstream-токены сегментов) в подпись не входят —
+    их наличие не влияет на проверку.
+    """
+    split = urlsplit(path)
+    signature = _compute_signature(_get_proxy_secret(hass), split.path)
+    if split.query:
+        new_query = f"{split.query}&{_SIGN_PARAM}={signature}"
+    else:
+        new_query = f"{_SIGN_PARAM}={signature}"
+    return f"{split.path}?{new_query}"
+
+
+def _validate_proxy_request(hass: HomeAssistant, request: web.Request) -> bool:
+    """Проверяет собственную HMAC-подпись запроса к прокси."""
+    # Аутентифицированный запрос HA (например, bearer-токен) пропускаем.
     if request.get(KEY_AUTHENTICATED):
         return True
-    if "http.auth" not in hass.data:
-        return True
-
-    if _ha_async_validate_signed_request is not None:
-        try:
-            result = _ha_async_validate_signed_request(request)
-            if inspect.isawaitable(result):
-                return await result
-            return result
-        except Exception as exc:
-            _LOGGER.warning("Signed-request validation failed: %s", exc)
-            return False
-
-    if _ha_async_validate_signed_path is not None:
-        try:
-            result = _ha_async_validate_signed_path(hass, request.path_qs)
-            if inspect.isawaitable(result):
-                return await result
-            return result
-        except Exception as exc:
-            _LOGGER.warning("Signed-path validation failed: %s", exc)
-            return False
-
-    _LOGGER.warning("Signed-path validation is unavailable; rejecting stream proxy request.")
-    return False
+    signature = request.query.get(_SIGN_PARAM)
+    if not signature:
+        return False
+    expected = _compute_signature(_get_proxy_secret(hass), request.path)
+    return hmac.compare_digest(signature, expected)
 
 
 class RosdomofonStreamProxyView(HomeAssistantView):
@@ -125,7 +102,7 @@ class RosdomofonStreamProxyView(HomeAssistantView):
         self, request: web.Request, camera_id: str, host: str, path: str = ""
     ) -> web.Response:
         """Проксирует GET запросы к HLS потоку."""
-        if not await _validate_signed_request_compat(self.hass, request):
+        if not _validate_proxy_request(self.hass, request):
             _LOGGER.warning(
                 "Неверная подпись для запроса: %s",
                 request.path_qs,
@@ -299,7 +276,7 @@ class RosdomofonStreamProxyView(HomeAssistantView):
         proxy_url = f"/api/rosdomofon/stream/{camera_id}/{host}/{new_path}"
         if query:
             proxy_url = f"{proxy_url}?{query}"
-        return await _sign_path_compat(self.hass, proxy_url)
+        return sign_proxy_path(self.hass, proxy_url)
 
 
 def setup_stream_proxy(hass: HomeAssistant) -> None:
@@ -309,13 +286,15 @@ def setup_stream_proxy(hass: HomeAssistant) -> None:
 
 
 def _upstream_query_string(request: web.Request) -> str:
-    """Возвращает query string для upstream без подписи Home Assistant."""
+    """Возвращает query string для upstream без параметров подписи прокси."""
     if not isinstance(request.query_string, str):
         return ""
 
+    # authSig — устаревшая подпись HA (для обратной совместимости), sig — текущая.
+    dropped = ("authSig", _SIGN_PARAM)
     pairs = [
         (key, value)
         for key, value in parse_qsl(request.query_string, keep_blank_values=True)
-        if key != "authSig"
+        if key not in dropped
     ]
     return urlencode(pairs, doseq=True)
