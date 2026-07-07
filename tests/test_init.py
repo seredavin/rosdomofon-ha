@@ -18,6 +18,7 @@ async def test_setup_entry_success(hass: HomeAssistant, mock_config_entry):
     with patch("custom_components.rosdomofon.TokenManager") as mock_token_manager, \
          patch("custom_components.rosdomofon.setup_stream_proxy") as mock_setup_proxy, \
          patch("custom_components.rosdomofon.setup_debug_view"), \
+         patch("custom_components.rosdomofon.setup_faces_view"), \
          patch.object(hass.config_entries, "async_forward_entry_setups") as mock_forward:
 
         mock_tm_instance = MagicMock()
@@ -71,6 +72,7 @@ async def test_setup_entry_proxy_registered_once(hass: HomeAssistant, mock_confi
     with patch("custom_components.rosdomofon.TokenManager") as mock_token_manager, \
          patch("custom_components.rosdomofon.setup_stream_proxy") as mock_setup_proxy, \
          patch("custom_components.rosdomofon.setup_debug_view"), \
+         patch("custom_components.rosdomofon.setup_faces_view"), \
          patch.object(hass.config_entries, "async_forward_entry_setups"):
 
         mock_tm_instance = MagicMock()
@@ -94,6 +96,7 @@ async def test_unload_entry(hass: HomeAssistant, mock_config_entry):
     with patch("custom_components.rosdomofon.TokenManager") as mock_token_manager, \
          patch("custom_components.rosdomofon.setup_stream_proxy"), \
          patch("custom_components.rosdomofon.setup_debug_view"), \
+         patch("custom_components.rosdomofon.setup_faces_view"), \
          patch.object(hass.config_entries, "async_forward_entry_setups"), \
          patch.object(hass.config_entries, "async_unload_platforms", return_value=True):
 
@@ -123,6 +126,7 @@ async def test_service_generate_share_link(hass: HomeAssistant, mock_config_entr
     with patch("custom_components.rosdomofon.TokenManager") as mock_token_manager, \
          patch("custom_components.rosdomofon.setup_stream_proxy"), \
          patch("custom_components.rosdomofon.setup_debug_view"), \
+         patch("custom_components.rosdomofon.setup_faces_view"), \
          patch.object(hass.config_entries, "async_forward_entry_setups"):
 
         mock_tm_instance = MagicMock()

@@ -28,6 +28,7 @@ from .const import (
 )
 from .debug_view import debug_gallery_url, setup_debug_view
 from .enroll import EnrollLinkManager
+from .faces_view import setup_faces_view
 from .face_store import FaceStore
 from .face_unlock import FaceUnlockCoordinator
 from .share import ExternalURLNotAvailable, ShareLinkManager
@@ -104,6 +105,11 @@ async def async_setup_entry(hass, entry) -> bool:
     if "_debug_registered" not in hass.data[DOMAIN]:
         setup_debug_view(hass)
         hass.data[DOMAIN]["_debug_registered"] = True
+
+    # Регистрируем галерею управления лицами (один раз на домен)
+    if "_faces_registered" not in hass.data[DOMAIN]:
+        setup_faces_view(hass)
+        hass.data[DOMAIN]["_faces_registered"] = True
 
     # При включённой отладке показываем ссылку на галерею кадров.
     if entry.options.get(CONF_DEBUG, DEFAULT_DEBUG):

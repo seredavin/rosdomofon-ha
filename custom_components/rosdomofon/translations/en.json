@@ -52,8 +52,13 @@
         "title": "People",
         "menu_options": {
           "add_person": "Add person",
-          "remove_person": "Remove person"
+          "remove_person": "Remove person",
+          "gallery": "Gallery & photo management"
         }
+      },
+      "gallery": {
+        "title": "Face gallery",
+        "description": "Open the page to view and delete photos of all people:\n\n{url}\n\nPress 'Submit' to go back."
       },
       "add_person": {
         "title": "Add person",
@@ -84,7 +89,8 @@
     "abort": {
       "configure_deepface_first": "First set the DeepFace service address in 'Service settings'.",
       "no_people": "No people yet — add a person first.",
-      "no_cameras": "No Rosdomofon cameras found."
+      "no_cameras": "No Rosdomofon cameras found.",
+      "no_gallery_url": "Could not build the gallery link: no internal/external URL is configured in Home Assistant."
     }
   },
   "services": {

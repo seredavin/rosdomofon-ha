@@ -303,7 +303,24 @@ class RosdomofonOptionsFlow(config_entries.OptionsFlow):
         """Меню управления людьми."""
         return self.async_show_menu(
             step_id="people",
-            menu_options=["add_person", "remove_person"],
+            menu_options=["add_person", "remove_person", "gallery"],
+        )
+
+    async def async_step_gallery(self, user_input=None):
+        """Показывает ссылку на страницу галереи лиц (просмотр и удаление фото)."""
+        from .faces_view import faces_gallery_url
+
+        if user_input is not None:
+            return await self.async_step_people()
+
+        url = faces_gallery_url(self.hass)
+        if not url:
+            return self.async_abort(reason="no_gallery_url")
+
+        return self.async_show_form(
+            step_id="gallery",
+            data_schema=vol.Schema({}),
+            description_placeholders={"url": url},
         )
 
     async def async_step_add_person(self, user_input=None):
@@ -363,10 +380,16 @@ class RosdomofonOptionsFlow(config_entries.OptionsFlow):
             await store.async_remove_person(user_input["name"])
             return await self.async_step_people()
 
+        options = [
+            selector.SelectOptionDict(
+                value=name, label=f"{name} ({store.photo_count(name)} фото)"
+            )
+            for name in people
+        ]
         schema = vol.Schema({
             vol.Required("name"): selector.SelectSelector(
                 selector.SelectSelectorConfig(
-                    options=people, mode=selector.SelectSelectorMode.DROPDOWN
+                    options=options, mode=selector.SelectSelectorMode.DROPDOWN
                 )
             ),
         })
