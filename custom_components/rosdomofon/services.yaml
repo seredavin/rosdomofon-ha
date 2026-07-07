@@ -21,3 +21,36 @@ generate_share_link:
           max: 168
           step: 0.5
           unit_of_measurement: "ч"
+
+generate_enroll_link:
+  name: "Создать ссылку для добавления лица"
+  description: >-
+    Генерирует временную ссылку на страницу с предпросмотром камеры, где можно
+    снять лицо с камеры или загрузить фото и добавить его выбранному человеку.
+    Внимание: по ссылке можно добавить лицо в список «своих» (доступ к двери).
+  fields:
+    camera:
+      name: "Камера"
+      description: "Камера, поток которой показывать на странице добавления."
+      required: true
+      selector:
+        entity:
+          domain: camera
+          integration: rosdomofon
+    person:
+      name: "Человек"
+      description: "Имя человека — существующего или нового."
+      required: true
+      selector:
+        text:
+    ttl_hours:
+      name: "Срок действия (часы)"
+      description: "Сколько часов ссылка будет активна."
+      required: false
+      default: 12
+      selector:
+        number:
+          min: 0.5
+          max: 168
+          step: 0.5
+          unit_of_measurement: "ч"

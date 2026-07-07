@@ -97,13 +97,17 @@ async def test_face_store_add_and_match(hass: HomeAssistant):
     await store.async_load()
 
     with patch(
-        "custom_components.rosdomofon.deepface_client.represent",
-        return_value=[[1.0, 0.0, 0.0]],
+        "custom_components.rosdomofon.deepface_client.represent_faces",
+        return_value=[{"embedding": [1.0, 0.0, 0.0], "facial_area": None, "confidence": 0.9}],
     ):
-        await store.async_add_person("Alice", b"img", "http://df", "Facenet512", "retinaface")
+        thumb = await store.async_add_person("Alice", b"img", "http://df", "Facenet512", "retinaface")
 
     assert store.people == ["Alice"]
     assert store.photo_count("Alice") == 1
+    assert isinstance(thumb, bytes)
+    # У фото есть id и сохранённая картинка
+    photos = store.photos("Alice")
+    assert len(photos) == 1 and photos[0]["photo"]
 
     # Похожий эмбеддинг -> совпадение
     match = store.match([0.99, 0.01, 0.0], threshold=0.3)
@@ -365,8 +369,8 @@ async def test_face_store_nearest_ignores_threshold(hass: HomeAssistant):
     store = FaceStore(hass)
     await store.async_load()
     with patch(
-        "custom_components.rosdomofon.deepface_client.represent",
-        return_value=[[1.0, 0.0, 0.0]],
+        "custom_components.rosdomofon.deepface_client.represent_faces",
+        return_value=[{"embedding": [1.0, 0.0, 0.0], "facial_area": None, "confidence": 0.9}],
     ):
         await store.async_add_person("Alice", b"img", "http://df", "Facenet512", "opencv")
 

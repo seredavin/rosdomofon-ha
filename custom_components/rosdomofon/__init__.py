@@ -15,12 +15,19 @@ from homeassistant.helpers import config_validation as cv
 
 from .const import (
     CONF_DEBUG,
+    CONF_DEEPFACE_URL,
+    CONF_DETECTOR,
+    CONF_MODEL,
     DATA_FACE_STORE,
     DEFAULT_DEBUG,
+    DEFAULT_DETECTOR,
+    DEFAULT_MODEL,
     DOMAIN,
+    ENROLL_LINK_DEFAULT_TTL_HOURS,
     SHARE_LINK_DEFAULT_TTL_HOURS,
 )
 from .debug_view import debug_gallery_url, setup_debug_view
+from .enroll import EnrollLinkManager
 from .face_store import FaceStore
 from .face_unlock import FaceUnlockCoordinator
 from .share import ExternalURLNotAvailable, ShareLinkManager
@@ -36,6 +43,16 @@ SERVICE_GENERATE_LINK = "generate_share_link"
 SERVICE_GENERATE_LINK_SCHEMA = vol.Schema({
     vol.Required("entity_id"): cv.entity_id,
     vol.Optional("ttl_hours", default=SHARE_LINK_DEFAULT_TTL_HOURS): vol.All(
+        vol.Coerce(float), vol.Range(min=0.5, max=168)
+    ),
+})
+
+# Схема сервиса генерации ссылки на добавление лица
+SERVICE_GENERATE_ENROLL = "generate_enroll_link"
+SERVICE_GENERATE_ENROLL_SCHEMA = vol.Schema({
+    vol.Required("camera"): cv.entity_id,
+    vol.Required("person"): vol.All(cv.string, vol.Length(min=1)),
+    vol.Optional("ttl_hours", default=ENROLL_LINK_DEFAULT_TTL_HOURS): vol.All(
         vol.Coerce(float), vol.Range(min=0.5, max=168)
     ),
 })
@@ -66,6 +83,16 @@ async def async_setup_entry(hass, entry) -> bool:
 
     coordinator = FaceUnlockCoordinator(hass, face_store, dict(entry.options))
     hass.data[DOMAIN][entry.entry_id]["face_coordinator"] = coordinator
+
+    # Менеджер ссылок для самостоятельного добавления лиц.
+    deepface_config = {
+        "url": entry.options.get(CONF_DEEPFACE_URL, ""),
+        "model": entry.options.get(CONF_MODEL, DEFAULT_MODEL),
+        "detector": entry.options.get(CONF_DETECTOR, DEFAULT_DETECTOR),
+    }
+    enroll_manager = EnrollLinkManager(hass, face_store, deepface_config)
+    hass.data[DOMAIN][entry.entry_id]["enroll_manager"] = enroll_manager
+
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
 
     # Регистрируем прокси для HLS потоков (один раз на домен)
@@ -146,6 +173,55 @@ async def async_setup_entry(hass, entry) -> bool:
             schema=SERVICE_GENERATE_LINK_SCHEMA,
         )
 
+    # Регистрируем сервис генерации ссылки на добавление лица (один раз на домен)
+    if not hass.services.has_service(DOMAIN, SERVICE_GENERATE_ENROLL):
+        async def handle_generate_enroll(call):
+            """Обработчик сервиса rosdomofon.generate_enroll_link."""
+            camera = call.data["camera"]
+            person = call.data["person"].strip()
+            ttl_hours = call.data.get("ttl_hours", ENROLL_LINK_DEFAULT_TTL_HOURS)
+
+            mgr = None
+            for _eid, data in hass.data.get(DOMAIN, {}).items():
+                if isinstance(data, dict) and "enroll_manager" in data:
+                    mgr = data["enroll_manager"]
+                    break
+
+            if mgr is None:
+                _LOGGER.error("Интеграция не настроена")
+                return
+
+            try:
+                url = mgr.generate(camera, person, ttl_hours)
+            except ExternalURLNotAvailable:
+                persistent_notification.async_create(
+                    hass,
+                    "Невозможно создать ссылку: в Home Assistant не настроен внешний доступ. "
+                    "Настройте External URL или подключите Home Assistant Cloud (Nabu Casa).",
+                    title="Росдомофон: внешний доступ не настроен",
+                    notification_id="rosdomofon_no_external_url",
+                )
+                return
+
+            ttl_text = f"{int(ttl_hours)} ч" if ttl_hours == int(ttl_hours) else f"{ttl_hours} ч"
+            persistent_notification.async_create(
+                hass,
+                f"Ссылка для добавления лица **{person}** "
+                f"(камера {camera}, действительна {ttl_text}):\n\n"
+                f"`{url}`\n\n"
+                f"Откройте на телефоне: снимите лицо с камеры или загрузите фото. "
+                f"⚠️ По ссылке можно добавить лицо в список «своих» — не пересылайте посторонним.",
+                title="Росдомофон: ссылка для добавления лица 👤➕",
+                notification_id=f"rosdomofon_enroll_{person}",
+            )
+
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_GENERATE_ENROLL,
+            handle_generate_enroll,
+            schema=SERVICE_GENERATE_ENROLL_SCHEMA,
+        )
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     # Запускаем опрос камер после создания сущностей.
@@ -171,9 +247,16 @@ async def async_unload_entry(hass, entry) -> bool:
         share_manager = data.get("share_manager")
         if share_manager:
             share_manager.revoke_all()
+        enroll_manager = data.get("enroll_manager")
+        if enroll_manager:
+            enroll_manager.revoke_all()
 
-        # Если больше нет активных entry, удаляем сервис
-        if not hass.data.get(DOMAIN):
+        # Если больше нет активных entry, удаляем сервисы
+        if not any(
+            isinstance(v, dict) and "token_manager" in v
+            for v in hass.data.get(DOMAIN, {}).values()
+        ):
             hass.services.async_remove(DOMAIN, SERVICE_GENERATE_LINK)
+            hass.services.async_remove(DOMAIN, SERVICE_GENERATE_ENROLL)
 
     return unload_ok

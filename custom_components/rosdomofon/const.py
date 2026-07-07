@@ -37,6 +37,10 @@ CAMERA_DETAILS_URL = f"{BASE_URL}/cameras-service/api/v1/cameras/{{camera_id}}"
 SHARE_LINK_DEFAULT_TTL_HOURS = 12
 SHARE_LINK_WEBHOOK_PREFIX = "rosdomofon_share_"
 
+# Ссылки для самостоятельного добавления лица (Enroll Link)
+ENROLL_LINK_DEFAULT_TTL_HOURS = 12
+ENROLL_LINK_WEBHOOK_PREFIX = "rosdomofon_enroll_"
+
 # ---------------------------------------------------------------------------
 # Распознавание лиц (авто-открытие двери по лицу через DeepFace)
 # ---------------------------------------------------------------------------

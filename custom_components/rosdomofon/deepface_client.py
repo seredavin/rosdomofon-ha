@@ -39,15 +39,19 @@ def _image_to_data_uri(image: bytes) -> str:
     return f"data:image/jpeg;base64,{b64}"
 
 
-def represent(
+def represent_faces(
     base_url: str,
     image: bytes,
     model_name: str,
     detector_backend: str,
     anti_spoofing: bool,
     enforce_detection: bool = True,
-) -> list[list[float]]:
-    """Возвращает эмбеддинги всех лиц на изображении.
+) -> list[dict]:
+    """Возвращает данные всех найденных лиц: эмбеддинг + область лица.
+
+    Каждый элемент: {"embedding": [...], "facial_area": {x,y,w,h} | None,
+    "confidence": float | None}. Область лица нужна для авто-обрезки при
+    добавлении эталона.
 
     При включённом anti_spoofing DeepFace бросает ошибку, если лицо признано
     подделкой — тогда поднимаем SpoofDetected. Прочие сбои — DeepFaceError.
@@ -78,12 +82,18 @@ def represent(
             results = response.json().get("results", [])
         except ValueError as exc:
             raise DeepFaceError(f"Некорректный ответ DeepFace: {exc}") from exc
-        embeddings: list[list[float]] = []
+        faces: list[dict] = []
         for item in results:
             embedding = item.get("embedding")
             if embedding:
-                embeddings.append(embedding)
-        return embeddings
+                faces.append(
+                    {
+                        "embedding": embedding,
+                        "facial_area": item.get("facial_area"),
+                        "confidence": item.get("face_confidence"),
+                    }
+                )
+        return faces
 
     # Ненулевой статус — разбираем сообщение об ошибке.
     message = _error_message(response)
@@ -98,6 +108,28 @@ def represent(
         # Лицо не найдено — не ошибка для нашего сценария.
         return []
     raise DeepFaceError(f"DeepFace вернул {response.status_code}: {message}")
+
+
+def represent(
+    base_url: str,
+    image: bytes,
+    model_name: str,
+    detector_backend: str,
+    anti_spoofing: bool,
+    enforce_detection: bool = True,
+) -> list[list[float]]:
+    """Возвращает эмбеддинги всех лиц на изображении (обёртка над represent_faces)."""
+    return [
+        face["embedding"]
+        for face in represent_faces(
+            base_url,
+            image,
+            model_name,
+            detector_backend,
+            anti_spoofing,
+            enforce_detection,
+        )
+    ]
 
 
 def _error_message(response: requests.Response) -> str:
