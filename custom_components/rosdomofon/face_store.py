@@ -161,6 +161,13 @@ class FaceStore:
         await self._store.async_save(self._data)
         return cropped
 
+    async def async_create_person(self, name: str) -> None:
+        """Создаёт человека без фото (пустой список эталонов)."""
+        people = self._data.setdefault("people", {})
+        if name not in people:
+            people[name] = []
+            await self._store.async_save(self._data)
+
     async def async_remove_person(self, name: str) -> None:
         """Удаляет человека и все его фото."""
         people = self._data.setdefault("people", {})

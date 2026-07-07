@@ -191,3 +191,50 @@ async def test_faces_add_photo_requires_name(hass: HomeAssistant):
     resp = await view.post(req)
     data = json.loads(resp.body)
     assert data["status"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_faces_create_person_without_photo(hass: HomeAssistant):
+    store = await _store_with_people(hass)
+    view = RosdomofonFacesView(hass)
+    resp = await view.post(
+        _signed_request(hass, "POST", {"action": "create_person", "name": "Пётр"})
+    )
+    data = json.loads(resp.body)
+    assert data["status"] == "ok"
+    assert "Пётр" in store.people
+    assert store.photo_count("Пётр") == 0
+
+
+@pytest.mark.asyncio
+async def test_faces_create_person_requires_name(hass: HomeAssistant):
+    await _store_with_people(hass)
+    view = RosdomofonFacesView(hass)
+    resp = await view.post(
+        _signed_request(hass, "POST", {"action": "create_person", "name": "   "})
+    )
+    assert json.loads(resp.body)["status"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_faces_enroll_link(hass: HomeAssistant):
+    from custom_components.rosdomofon.enroll import EnrollLinkManager
+
+    store = await _store_with_people(hass)
+    mgr = EnrollLinkManager(
+        hass, store, {"url": "http://df", "model": "Facenet512", "detector": "opencv"}
+    )
+    hass.data[DOMAIN]["entry_x"] = {"enroll_manager": mgr}
+
+    view = RosdomofonFacesView(hass)
+    with patch("custom_components.rosdomofon.enroll.network.get_url", return_value="https://ha.example"), \
+         patch("custom_components.rosdomofon.enroll.webhook.async_register"), \
+         patch("custom_components.rosdomofon.enroll.async_call_later", return_value=MagicMock()):
+        resp = await view.post(
+            _signed_request(hass, "POST", {"action": "enroll_link", "name": "Иван"})
+        )
+
+    data = json.loads(resp.body)
+    assert data["status"] == "ok"
+    assert data["link"].startswith("https://ha.example/api/webhook/")
+    assert data["link_person"] == "Иван"

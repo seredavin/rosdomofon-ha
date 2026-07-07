@@ -42,7 +42,7 @@ class EnrollLink:
     """Одна временная ссылка для добавления лица человеку."""
 
     webhook_id: str
-    camera_entity_id: str
+    camera_entity_id: str | None
     person_name: str
     created_at: float = field(default_factory=time.time)
     ttl_hours: float = ENROLL_LINK_DEFAULT_TTL_HOURS
@@ -78,11 +78,15 @@ class EnrollLinkManager:
 
     def generate(
         self,
-        camera_entity_id: str,
+        camera_entity_id: str | None,
         person_name: str,
         ttl_hours: float = ENROLL_LINK_DEFAULT_TTL_HOURS,
     ) -> str:
-        """Создаёт ссылку для добавления лица и возвращает полный URL."""
+        """Создаёт ссылку для добавления лица и возвращает полный URL.
+
+        camera_entity_id может быть None — тогда на странице только загрузка фото
+        (без предпросмотра и съёмки с камеры).
+        """
         try:
             external_url = network.get_url(
                 self.hass,
@@ -156,6 +160,8 @@ class EnrollLinkManager:
         # GET: снимок для предпросмотра или сама страница
         if request.method == hdrs.METH_GET:
             if request.query.get("snapshot"):
+                if not link.camera_entity_id:
+                    return web.Response(status=404, text="no camera")
                 return await self._serve_snapshot(link.camera_entity_id)
             return self._serve_page(link)
 
@@ -206,6 +212,10 @@ class EnrollLinkManager:
         action = body.get("action")
 
         if action == "capture":
+            if not link.camera_entity_id:
+                return web.json_response(
+                    {"status": "error", "message": "Камера не привязана к этой ссылке."}
+                )
             try:
                 image = await async_get_image(
                     self.hass, link.camera_entity_id, timeout=10
@@ -272,8 +282,10 @@ class EnrollLinkManager:
         }
 
     def _serve_page(self, link: EnrollLink) -> web.Response:
-        state = self.hass.states.get(link.camera_entity_id)
-        camera_name = state.name if state else link.camera_entity_id
+        camera_name = None
+        if link.camera_entity_id:
+            state = self.hass.states.get(link.camera_entity_id)
+            camera_name = state.name if state else link.camera_entity_id
         remaining = max(0, link.expires_at - time.time())
         return web.Response(
             text=_enroll_page(
@@ -315,17 +327,35 @@ def _thumb_html(photo: dict) -> str:
 
 def _enroll_page(
     person: str,
-    camera_name: str,
+    camera_name: str | None,
     remaining_h: int,
     remaining_m: int,
     photos: list[dict],
 ) -> str:
-    """Страница добавления лица: предпросмотр камеры, съёмка, загрузка, эскизы."""
+    """Страница добавления лица: (опц.) предпросмотр камеры, съёмка, загрузка, эскизы."""
     person_e = html.escape(person, quote=True)
-    camera_e = html.escape(camera_name, quote=True)
     thumbs = "".join(_thumb_html(p) for p in photos)
-    # Безопасно прокидываем имя в JS-строку
     person_json = json.dumps(person)
+    has_camera = camera_name is not None
+
+    if has_camera:
+        sub = f"Камера: {html.escape(camera_name, quote=True)} · ссылка активна ещё {remaining_h}ч {remaining_m}м"
+        camera_block = (
+            '<img class="preview" id="preview" alt="предпросмотр камеры">'
+            '<div class="btns">'
+            '<button class="act" id="cap">📸 Снять с камеры</button>'
+            '<label class="upload">⬆️ Загрузить фото<input type="file" id="file" accept="image/*"></label>'
+            "</div>"
+        )
+        hint = "Встаньте ровно к камере и нажмите «Снять», либо загрузите фото."
+    else:
+        sub = f"Ссылка активна ещё {remaining_h}ч {remaining_m}м"
+        camera_block = (
+            '<div class="btns">'
+            '<label class="upload wide">⬆️ Загрузить фото<input type="file" id="file" accept="image/*"></label>'
+            "</div>"
+        )
+        hint = "Загрузите фото лица (анфас, хорошее освещение)."
 
     return f"""<!doctype html>
 <html lang="ru"><head><meta charset="utf-8">
@@ -344,9 +374,10 @@ def _enroll_page(
   button.act {{ flex:1; border:none; border-radius:14px; padding:14px; font-size:1rem;
                font-weight:700; cursor:pointer; background:#fff; color:#7b5cff; }}
   button.act:disabled {{ opacity:.6; cursor:default; }}
-  label.upload {{ flex:1; border:none; border-radius:14px; padding:14px; font-size:1rem;
+  label.upload {{ flex:1; border-radius:14px; padding:14px; font-size:1rem;
                  font-weight:700; cursor:pointer; background:#ffffff22; color:#fff;
                  text-align:center; border:1px solid #ffffff55; }}
+  label.upload.wide {{ flex:1; background:#fff; color:#7b5cff; border:none; }}
   #file {{ display:none; }}
   .status {{ min-height:1.3em; font-size:.9rem; margin:6px 0 14px; }}
   .ok {{ color:#d6ffe8; }} .err {{ color:#ffdede; }}
@@ -362,14 +393,10 @@ def _enroll_page(
 </style></head>
 <body><div class="wrap">
   <h1>Добавление лица: {person_e}</h1>
-  <div class="sub">Камера: {camera_e} · ссылка активна ещё {remaining_h}ч {remaining_m}м</div>
+  <div class="sub">{sub}</div>
 
-  <img class="preview" id="preview" alt="предпросмотр камеры">
-  <div class="btns">
-    <button class="act" id="cap">📸 Снять с камеры</button>
-    <label class="upload">⬆️ Загрузить фото<input type="file" id="file" accept="image/*"></label>
-  </div>
-  <div class="status" id="status">Встаньте ровно к камере и нажмите «Снять», либо загрузите фото.</div>
+  {camera_block}
+  <div class="status" id="status">{hint}</div>
 
   <div class="count" id="count">Фото у «{person_e}»: {len(photos)}</div>
   <div class="grid" id="grid">{thumbs}</div>
@@ -378,25 +405,25 @@ def _enroll_page(
 </div>
 <script>
   const base = window.location.pathname;
-  const preview = document.getElementById('preview');
   const status = document.getElementById('status');
-  const cap = document.getElementById('cap');
   const file = document.getElementById('file');
   const grid = document.getElementById('grid');
   const count = document.getElementById('count');
+  const cap = document.getElementById('cap');
+  const preview = document.getElementById('preview');
   const person = {person_json};
 
-  function poll() {{
-    const img = new Image();
-    img.onload = () => {{ preview.src = img.src; setTimeout(poll, 2500); }};
-    img.onerror = () => setTimeout(poll, 4000);
-    img.src = base + '?snapshot=1&t=' + Date.now();
-  }}
-  poll();
-
   function setStatus(msg, ok) {{ status.textContent = msg; status.className = 'status ' + (ok ? 'ok' : 'err'); }}
-
   function esc(s) {{ const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }}
+
+  if (preview) {{
+    (function poll() {{
+      const img = new Image();
+      img.onload = () => {{ preview.src = img.src; setTimeout(poll, 2500); }};
+      img.onerror = () => setTimeout(poll, 4000);
+      img.src = base + '?snapshot=1&t=' + Date.now();
+    }})();
+  }}
 
   function renderList(data) {{
     count.textContent = 'Фото у «' + person + '»: ' + data.count;
@@ -448,7 +475,7 @@ def _enroll_page(
     }} catch (e) {{}}
   }}
 
-  cap.addEventListener('click', capture);
+  if (cap) cap.addEventListener('click', capture);
   file.addEventListener('change', e => {{ if (e.target.files[0]) upload(e.target.files[0]); }});
   grid.addEventListener('click', e => {{
     if (e.target.classList.contains('del')) {{

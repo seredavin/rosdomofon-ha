@@ -24,6 +24,7 @@ from .const import (
     DEFAULT_MODEL,
     DOMAIN,
 )
+from .share import ExternalURLNotAvailable
 from .stream_proxy import _validate_proxy_request, sign_proxy_path
 
 _LOGGER = logging.getLogger(__name__)
@@ -68,6 +69,13 @@ def async_remove_faces_panel(hass: HomeAssistant) -> None:
 
 def _face_store(hass: HomeAssistant):
     return hass.data.get(DOMAIN, {}).get(DATA_FACE_STORE)
+
+
+def _enroll_manager(hass: HomeAssistant):
+    for data in hass.data.get(DOMAIN, {}).values():
+        if isinstance(data, dict) and "enroll_manager" in data:
+            return data["enroll_manager"]
+    return None
 
 
 def _deepface_config(hass: HomeAssistant) -> dict | None:
@@ -119,16 +127,50 @@ class RosdomofonFacesView(HomeAssistantView):
         except Exception:  # noqa: BLE001
             body = {}
         action = body.get("action")
-        name = body.get("name")
+        name = (body.get("name") or "").strip()
 
         if action == "delete_photo" and name and body.get("id"):
             await store.async_remove_photo(name, body["id"])
         elif action == "delete_person" and name:
             await store.async_remove_person(name)
+        elif action == "create_person":
+            if not name:
+                return web.json_response(self._result("error", "Введите имя человека."))
+            await store.async_create_person(name)
+            return web.json_response(self._result("ok", f"Человек «{name}» создан."))
+        elif action == "enroll_link":
+            if not name:
+                return web.json_response(self._result("error", "Введите имя человека."))
+            return await self._handle_enroll_link(name)
         elif action != "list":
             return web.json_response({"status": "error", "message": "неизвестное действие"}, status=400)
 
         return web.json_response(self._people_payload())
+
+    async def _handle_enroll_link(self, name: str) -> web.Response:
+        """Создаёт временную ссылку самозагрузки фото для человека (без камеры)."""
+        mgr = _enroll_manager(self.hass)
+        if mgr is None:
+            return web.json_response(self._result("error", "Интеграция не настроена."))
+        try:
+            url = mgr.generate(None, name)
+        except ExternalURLNotAvailable:
+            return web.json_response(
+                self._result(
+                    "error",
+                    "Для ссылки нужен внешний доступ (External URL или Nabu Casa).",
+                )
+            )
+        payload = self._result("ok", f"Ссылка для «{name}» создана.")
+        payload["link"] = url
+        payload["link_person"] = name
+        return web.json_response(payload)
+
+    def _result(self, status: str, message: str) -> dict:
+        payload = self._people_payload()
+        payload["status"] = status
+        payload["message"] = message
+        return payload
 
     async def _handle_add(self, request: web.Request) -> web.Response:
         """Добавляет фото человеку из загруженного файла."""
@@ -180,80 +222,117 @@ class RosdomofonFacesView(HomeAssistantView):
         return {"status": "ok", "people": people}
 
 
+def _thumb_html(photo: dict) -> str:
+    pid = html.escape(photo["id"], quote=True)
+    if photo.get("photo"):
+        inner = f'<img src="data:image/jpeg;base64,{photo["photo"]}" alt="лицо">'
+    else:
+        inner = '<div class="noimg">без фото</div>'
+    return f'<div class="thumb" data-id="{pid}">{inner}<button class="del" title="Удалить фото">✕</button></div>'
+
+
 def _person_card(person: dict) -> str:
     name_e = html.escape(person["name"], quote=True)
-    thumbs = []
-    for photo in person["photos"]:
-        pid = html.escape(photo["id"], quote=True)
-        if photo.get("photo"):
-            inner = f'<img src="data:image/jpeg;base64,{photo["photo"]}">'
-        else:
-            inner = '<div class="noimg">без фото</div>'
-        thumbs.append(
-            f'<div class="thumb" data-id="{pid}">{inner}<button class="del">✕</button></div>'
-        )
-    grid = "".join(thumbs)
+    thumbs = "".join(_thumb_html(p) for p in person["photos"])
+    grid_inner = thumbs or '<div class="empty-grid">Фото пока нет</div>'
     return (
-        f'<div class="person" data-name="{name_e}">'
+        f'<div class="card person" data-name="{name_e}">'
         f'<div class="phead"><span class="pname">{name_e}</span>'
-        f'<span class="pcount">{person["count"]} фото</span>'
-        f'<button class="addphoto">＋ фото</button>'
-        f'<button class="delperson">Удалить человека</button>'
+        f'<span class="chip">{person["count"]} фото</span></div>'
+        f'<div class="grid">{grid_inner}</div>'
+        f'<div class="actions">'
+        f'<button class="btn primary addphoto">Добавить фото</button>'
+        f'<button class="btn enroll">Ссылка для загрузки</button>'
+        f'<button class="btn danger delperson">Удалить</button>'
         f'<input type="file" class="pfile" accept="image/*" hidden></div>'
-        f'<div class="grid">{grid}</div></div>'
+        f"</div>"
     )
 
 
 def _render_page(people: list[dict]) -> str:
-    cards = (
-        "".join(_person_card(p) for p in people)
-        if people
-        else '<p class="empty">Пока нет добавленных лиц. Добавьте человека в настройках '
-        "или по ссылке добавления лица.</p>"
+    cards = "".join(_person_card(p) for p in people) or (
+        '<div class="card empty">Пока нет добавленных лиц. Создайте человека выше.</div>'
     )
     return f"""<!doctype html>
 <html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Росдомофон · лица</title>
+<title>Росдомофон · Лица</title>
 <style>
+  :root {{
+    --bg:#f2f3f5; --card:#fff; --text:#212121; --secondary:#5f6368; --primary:#03a9f4;
+    --on-primary:#fff; --divider:#e3e5e8; --danger:#db4437; --chip-bg:#eceff1;
+    --shadow:0 2px 3px rgba(0,0,0,.08),0 1px 2px rgba(0,0,0,.06);
+  }}
+  @media (prefers-color-scheme: dark) {{
+    :root {{
+      --bg:#111214; --card:#1c1e22; --text:#e3e3e3; --secondary:#9aa0a6; --divider:#2a2d31;
+      --chip-bg:#2a2d31; --shadow:0 2px 6px rgba(0,0,0,.4);
+    }}
+  }}
   * {{ box-sizing:border-box; }}
-  body {{ margin:0; font-family:-apple-system,Segoe UI,Roboto,sans-serif; background:#111; color:#eee; }}
-  header {{ padding:14px 16px; background:#1c1c1c; position:sticky; top:0; }}
-  header h1 {{ font-size:16px; margin:0; }}
-  .wrap {{ padding:16px; max-width:760px; margin:0 auto; }}
-  .person {{ background:#1c1c1c; border-radius:12px; padding:12px 14px; margin-bottom:14px; }}
-  .phead {{ display:flex; align-items:center; gap:10px; margin-bottom:10px; }}
-  .pname {{ font-weight:700; font-size:15px; }}
-  .pcount {{ font-size:12px; color:#9ab; }}
-  .addphoto {{ margin-left:auto; background:#123; color:#9cf; border:1px solid #46a;
-              border-radius:8px; padding:6px 10px; cursor:pointer; font-size:12px; }}
-  .delperson {{ background:#402; color:#f99; border:1px solid #a44;
-               border-radius:8px; padding:6px 10px; cursor:pointer; font-size:12px; }}
-  .newrow {{ display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap; }}
-  .newrow input[type=text] {{ flex:1; min-width:160px; padding:10px; border-radius:8px;
-    border:1px solid #444; background:#0d0d0d; color:#eee; }}
-  .newrow button {{ background:#fff; color:#7b5cff; border:none; border-radius:8px;
-    padding:10px 14px; font-weight:700; cursor:pointer; }}
-  .status {{ min-height:1.2em; font-size:13px; margin:-4px 0 14px; }}
-  .status.ok {{ color:#8fe6b0; }} .status.err {{ color:#ff9a9a; }}
-  .grid {{ display:grid; grid-template-columns:repeat(auto-fill,minmax(84px,1fr)); gap:8px; }}
-  .thumb {{ position:relative; aspect-ratio:1; border-radius:10px; overflow:hidden; background:#0003; }}
+  body {{ margin:0; background:var(--bg); color:var(--text);
+    font-family:Roboto,"Helvetica Neue",-apple-system,Segoe UI,sans-serif; }}
+  .appbar {{ background:var(--primary); color:var(--on-primary); height:56px; padding:0 16px;
+    display:flex; align-items:center; position:sticky; top:0; z-index:2; box-shadow:var(--shadow); }}
+  .appbar h1 {{ font-size:20px; font-weight:400; margin:0; }}
+  .wrap {{ max-width:720px; margin:0 auto; padding:16px; }}
+  .card {{ background:var(--card); border-radius:12px; box-shadow:var(--shadow);
+    padding:16px; margin-bottom:16px; }}
+  .formrow {{ display:flex; gap:8px; flex-wrap:wrap; align-items:center; }}
+  input[type=text] {{ flex:1; min-width:180px; padding:10px 12px; border-radius:8px;
+    border:1px solid var(--divider); background:var(--bg); color:var(--text); font-size:14px; }}
+  .btn {{ border:none; border-radius:8px; padding:9px 14px; font-size:14px; font-weight:500;
+    cursor:pointer; background:var(--chip-bg); color:var(--primary); }}
+  .btn.primary {{ background:var(--primary); color:var(--on-primary); }}
+  .btn.danger {{ background:transparent; color:var(--danger); }}
+  .btn:active {{ opacity:.85; }}
+  .hint {{ color:var(--secondary); font-size:12px; margin-top:8px; }}
+  .status {{ min-height:1.2em; font-size:13px; margin:0 2px 14px; }}
+  .status.ok {{ color:#2e7d32; }} .status.err {{ color:var(--danger); }}
+  @media (prefers-color-scheme: dark) {{ .status.ok {{ color:#81c995; }} }}
+  .phead {{ display:flex; align-items:center; gap:10px; margin-bottom:12px; }}
+  .pname {{ font-weight:500; font-size:16px; }}
+  .chip {{ font-size:12px; color:var(--secondary); background:var(--chip-bg);
+    border-radius:12px; padding:2px 10px; }}
+  .grid {{ display:grid; grid-template-columns:repeat(auto-fill,minmax(88px,1fr));
+    gap:8px; margin-bottom:12px; }}
+  .thumb {{ position:relative; aspect-ratio:1; border-radius:8px; overflow:hidden; background:var(--chip-bg); }}
   .thumb img {{ width:100%; height:100%; object-fit:cover; }}
   .thumb .noimg {{ display:flex; align-items:center; justify-content:center; height:100%;
-                  font-size:.7rem; opacity:.6; }}
-  .del {{ position:absolute; top:3px; right:3px; width:22px; height:22px; border:none;
-         border-radius:50%; background:#000a; color:#fff; cursor:pointer; font-size:.8rem; }}
-  .empty {{ color:#999; padding:24px; }}
+    font-size:11px; color:var(--secondary); }}
+  .del {{ position:absolute; top:4px; right:4px; width:22px; height:22px; border:none;
+    border-radius:50%; background:rgba(0,0,0,.55); color:#fff; cursor:pointer; font-size:12px; line-height:1; }}
+  .empty-grid {{ color:var(--secondary); font-size:13px; padding:8px 0 4px; }}
+  .actions {{ display:flex; gap:8px; flex-wrap:wrap; }}
+  .empty {{ color:var(--secondary); text-align:center; }}
+  .linktitle {{ font-weight:500; margin-bottom:6px; }}
+  .linkrow {{ display:flex; gap:8px; }}
+  .linkhint {{ color:var(--secondary); font-size:12px; margin-top:8px; }}
 </style></head>
 <body>
-<header><h1>Эталонные лица</h1></header>
+<div class="appbar"><h1>Росдомофон · Лица</h1></div>
 <div class="wrap">
-  <div class="newrow">
-    <input type="text" id="newname" placeholder="Имя нового человека">
-    <button id="addnew">＋ Добавить фото</button>
-    <input type="file" id="newfile" accept="image/*" hidden>
+  <div class="card">
+    <div class="formrow">
+      <input type="text" id="newname" placeholder="Имя человека">
+      <button class="btn" id="createnew">Создать без фото</button>
+      <button class="btn primary" id="uploadnew">Загрузить фото</button>
+      <input type="file" id="newfile" accept="image/*" hidden>
+    </div>
+    <div class="hint">Создайте человека без фото или сразу загрузите фото. Фото автоматически обрезается по лицу.</div>
   </div>
+
   <div class="status" id="status"></div>
+
+  <div class="card" id="linkbox" hidden>
+    <div class="linktitle" id="linktitle"></div>
+    <div class="linkrow">
+      <input type="text" id="linkurl" readonly>
+      <button class="btn primary" id="copylink">Копировать</button>
+    </div>
+    <div class="linkhint">Откройте ссылку на телефоне нужного человека — он сам загрузит свои фото. ⚠️ Добавленное лицо получает доступ к двери; ссылка временная.</div>
+  </div>
+
   <div id="root">{cards}</div>
 </div>
 <script>
@@ -262,35 +341,45 @@ def _render_page(people: list[dict]) -> str:
   const status = document.getElementById('status');
   const newname = document.getElementById('newname');
   const newfile = document.getElementById('newfile');
-  const addnew = document.getElementById('addnew');
+  const linkbox = document.getElementById('linkbox');
+  const linktitle = document.getElementById('linktitle');
+  const linkurl = document.getElementById('linkurl');
 
   function esc(s) {{ const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }}
   function setStatus(msg, ok) {{ status.textContent = msg || ''; status.className = 'status ' + (ok ? 'ok' : 'err'); }}
 
-  function render(people) {{
-    if (!people.length) {{ root.innerHTML = '<p class="empty">Пока нет добавленных лиц.</p>'; return; }}
-    root.innerHTML = people.map(p => {{
-      const thumbs = (p.photos||[]).map(ph => {{
-        const inner = ph.photo
-          ? '<img src="data:image/jpeg;base64,' + ph.photo + '">'
-          : '<div class="noimg">без фото</div>';
-        return '<div class="thumb" data-id="' + esc(ph.id) + '">' + inner + '<button class="del">✕</button></div>';
-      }}).join('');
-      return '<div class="person" data-name="' + esc(p.name) + '"><div class="phead">' +
-        '<span class="pname">' + esc(p.name) + '</span>' +
-        '<span class="pcount">' + p.count + ' фото</span>' +
-        '<button class="addphoto">＋ фото</button>' +
-        '<button class="delperson">Удалить человека</button>' +
-        '<input type="file" class="pfile" accept="image/*" hidden></div>' +
-        '<div class="grid">' + thumbs + '</div></div>';
-    }}).join('');
+  function personCard(p) {{
+    const thumbs = (p.photos||[]).map(ph => {{
+      const inner = ph.photo
+        ? '<img src="data:image/jpeg;base64,' + ph.photo + '" alt="лицо">'
+        : '<div class="noimg">без фото</div>';
+      return '<div class="thumb" data-id="' + esc(ph.id) + '">' + inner +
+             '<button class="del" title="Удалить фото">✕</button></div>';
+    }}).join('') || '<div class="empty-grid">Фото пока нет</div>';
+    return '<div class="card person" data-name="' + esc(p.name) + '"><div class="phead">' +
+      '<span class="pname">' + esc(p.name) + '</span>' +
+      '<span class="chip">' + p.count + ' фото</span></div>' +
+      '<div class="grid">' + thumbs + '</div>' +
+      '<div class="actions">' +
+      '<button class="btn primary addphoto">Добавить фото</button>' +
+      '<button class="btn enroll">Ссылка для загрузки</button>' +
+      '<button class="btn danger delperson">Удалить</button>' +
+      '<input type="file" class="pfile" accept="image/*" hidden></div></div>';
   }}
 
-  async function act(payload) {{
+  function render(people) {{
+    root.innerHTML = people.length
+      ? people.map(personCard).join('')
+      : '<div class="card empty">Пока нет добавленных лиц. Создайте человека выше.</div>';
+  }}
+
+  async function send(payload) {{
     const r = await fetch(base, {{ method:'POST', headers:{{'Content-Type':'application/json'}},
       body: JSON.stringify(payload) }});
     const d = await r.json();
     if (d.people) render(d.people);
+    if (d.message !== undefined) setStatus(d.message, d.status === 'ok');
+    return d;
   }}
 
   async function uploadPhoto(name, file) {{
@@ -302,32 +391,53 @@ def _render_page(people: list[dict]) -> str:
       const d = await r.json();
       setStatus(d.message, d.status === 'ok');
       if (d.people) render(d.people);
-      if (d.status === 'ok') {{ newname.value = ''; }}
     }} catch (e) {{ setStatus('Ошибка загрузки.', false); }}
   }}
 
-  addnew.addEventListener('click', () => {{
-    if (!newname.value.trim()) {{ setStatus('Введите имя нового человека.', false); return; }}
+  function showLink(url, person) {{
+    linktitle.textContent = 'Ссылка для «' + person + '»';
+    linkurl.value = url;
+    linkbox.hidden = false;
+    if (navigator.clipboard) navigator.clipboard.writeText(url).catch(() => {{}});
+    linkbox.scrollIntoView({{ behavior:'smooth', block:'nearest' }});
+  }}
+
+  document.getElementById('createnew').addEventListener('click', async () => {{
+    const name = newname.value.trim();
+    if (!name) {{ setStatus('Введите имя человека.', false); return; }}
+    const d = await send({{action:'create_person', name:name}});
+    if (d.status === 'ok') newname.value = '';
+  }});
+  document.getElementById('uploadnew').addEventListener('click', () => {{
+    if (!newname.value.trim()) {{ setStatus('Введите имя человека.', false); return; }}
     newfile.click();
   }});
   newfile.addEventListener('change', e => {{
     if (e.target.files[0]) uploadPhoto(newname.value.trim(), e.target.files[0]);
     e.target.value = '';
   }});
+  document.getElementById('copylink').addEventListener('click', () => {{
+    linkurl.select();
+    if (navigator.clipboard) navigator.clipboard.writeText(linkurl.value).catch(() => {{}});
+    setStatus('Ссылка скопирована.', true);
+  }});
 
-  root.addEventListener('click', e => {{
+  root.addEventListener('click', async e => {{
     const person = e.target.closest('.person');
     if (!person) return;
     const name = person.dataset.name;
     if (e.target.classList.contains('del')) {{
       const thumb = e.target.closest('.thumb');
-      if (thumb) act({{action:'delete_photo', name:name, id:thumb.dataset.id}});
+      if (thumb) send({{action:'delete_photo', name:name, id:thumb.dataset.id}});
     }} else if (e.target.classList.contains('delperson')) {{
       if (confirm('Удалить «' + name + '» и все его фото?'))
-        act({{action:'delete_person', name:name}});
+        send({{action:'delete_person', name:name}});
     }} else if (e.target.classList.contains('addphoto')) {{
       const f = person.querySelector('.pfile');
       if (f) f.click();
+    }} else if (e.target.classList.contains('enroll')) {{
+      const d = await send({{action:'enroll_link', name:name}});
+      if (d.link) showLink(d.link, d.link_person || name);
     }}
   }});
   root.addEventListener('change', e => {{

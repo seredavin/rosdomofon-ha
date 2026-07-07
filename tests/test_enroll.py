@@ -223,6 +223,39 @@ async def test_enroll_upload_and_delete(hass: HomeAssistant):
 
 
 @pytest.mark.asyncio
+async def test_enroll_without_camera(hass: HomeAssistant):
+    """Ссылка без камеры: страница без предпросмотра, съёмка недоступна, загрузка работает."""
+    store = FaceStore(hass)
+    await store.async_load()
+    manager = _manager(hass, store)
+    wh_id = _make_link(hass, manager, person="Ivan", camera=None)
+
+    # Страница без блока камеры
+    page_req = MagicMock(method="GET", query={})
+    resp = await manager._handle_webhook(hass, wh_id, page_req)
+    assert resp.status == 200
+    assert 'id="preview"' not in resp.text
+    assert "Загрузить фото" in resp.text
+
+    # Съёмка недоступна без камеры
+    cap_req = MagicMock(method="POST", content_type="application/json")
+    cap_req.json = AsyncMock(return_value={"action": "capture"})
+    resp2 = await manager._handle_webhook(hass, wh_id, cap_req)
+    assert json.loads(resp2.body)["status"] == "error"
+
+    # Загрузка фото работает
+    field = MagicMock()
+    field.file = io.BytesIO(b"uploaded")
+    up_req = MagicMock(method="POST", content_type="multipart/form-data")
+    up_req.post = AsyncMock(return_value={"photo": field})
+    with patch("custom_components.rosdomofon.deepface_client.represent_faces",
+               return_value=[{"embedding": [1.0, 0.0], "facial_area": None, "confidence": 0.9}]):
+        resp3 = await manager._handle_webhook(hass, wh_id, up_req)
+    assert json.loads(resp3.body)["status"] == "ok"
+    assert store.photo_count("Ivan") == 1
+
+
+@pytest.mark.asyncio
 async def test_enroll_snapshot(hass: HomeAssistant):
     manager = _manager(hass, FaceStore(hass))
     wh_id = _make_link(hass, manager)
