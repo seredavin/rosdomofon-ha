@@ -254,7 +254,8 @@ class RosdomofonOptionsFlow(config_entries.OptionsFlow):
                 default=opts.get(CONF_DETECTOR, DEFAULT_DETECTOR),
             ): selector.SelectSelector(
                 selector.SelectSelectorConfig(
-                    options=["opencv", "ssd", "mtcnn", "retinaface"],
+                    # Порядок = рекомендация: yunet/mtcnn/retinaface точнее opencv.
+                    options=["yunet", "mtcnn", "retinaface", "ssd", "opencv"],
                     mode=selector.SelectSelectorMode.DROPDOWN,
                 )
             ),

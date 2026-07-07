@@ -86,6 +86,24 @@ async def async_setup_entry(hass, entry) -> bool:
         await face_store.async_load()
         hass.data[DOMAIN][DATA_FACE_STORE] = face_store
 
+    # Модель/детектор задают, как считаются эмбеддинги эталонов. Если пользователь
+    # сменил детектор (или модель) в настройках — старые эталоны несовместимы с
+    # живыми кадрами, сбрасываем их и просим пересоздать фото. Иначе распознавание
+    # молча «плывёт»: и своих пропускает, и чужих пускает.
+    reset_reason = await face_store.async_sync_config(
+        entry.options.get(CONF_MODEL, DEFAULT_MODEL),
+        entry.options.get(CONF_DETECTOR, DEFAULT_DETECTOR),
+    )
+    if reset_reason:
+        persistent_notification.async_create(
+            hass,
+            f"Сменился **{reset_reason}** распознавания лиц — сохранённые эталоны "
+            f"больше не действительны и были сброшены. Добавьте фото людей заново "
+            f"(лучше всего — сняв их той же камерой домофона).",
+            title="Росдомофон: эталоны лиц сброшены ♻️",
+            notification_id="rosdomofon_faces_reset",
+        )
+
     coordinator = FaceUnlockCoordinator(hass, face_store, dict(entry.options))
     hass.data[DOMAIN][entry.entry_id]["face_coordinator"] = coordinator
 

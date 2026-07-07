@@ -5,9 +5,15 @@
 DeepFace), обрезанное фото лица и id (для поштучного удаления). Матчинг —
 чистая функция косинусного расстояния без обращений к сети.
 
+Эмбеддинги зависят и от модели, и от детектора лиц (детектор задаёт
+кадрирование и выравнивание лица перед вычислением эмбеддинга). Поэтому в
+хранилище фиксируется и то, и другое: при смене любого из них сохранённые
+эталоны несовместимы с живыми кадрами и сбрасываются (см. async_sync_config).
+
 Формат хранения (Store):
     {
       "model": str,
+      "detector": str,
       "people": {
         name: [
           {"id": hex, "embedding": [float, ...], "photo": base64_jpeg | None},
@@ -54,7 +60,7 @@ class FaceStore:
     def __init__(self, hass: HomeAssistant) -> None:
         self._hass = hass
         self._store: Store = Store(hass, FACE_STORE_VERSION, FACE_STORE_KEY)
-        self._data: dict = {"model": None, "people": {}}
+        self._data: dict = {"model": None, "detector": None, "people": {}}
 
     async def async_load(self) -> None:
         """Загружает данные из Store, мигрируя старый формат при необходимости."""
@@ -63,7 +69,55 @@ class FaceStore:
             self._data = stored
             self._data.setdefault("people", {})
             self._data.setdefault("model", None)
+            self._data.setdefault("detector", None)
             self._migrate()
+
+    async def async_sync_config(
+        self, model_name: str, detector_backend: str
+    ) -> str | None:
+        """Сверяет модель/детектор с текущими настройками, сбрасывая эталоны при смене.
+
+        Эмбеддинги эталонов зависят и от модели, и от детектора: сменился любой —
+        сохранённые эмбеддинги больше несовместимы с живыми кадрами, иначе
+        распознавание молча «плывёт». Возвращает "модель"/"детектор", если эталоны
+        были сброшены, иначе None.
+
+        Прежний детектор может быть неизвестен (миграция со старого формата без
+        поля detector) — в этом случае эталоны НЕ трогаем, а просто фиксируем
+        текущий детектор как эталонный (считаем, что фото сняты именно им).
+        """
+        people = self._data.setdefault("people", {})
+        has_embeddings = any(entries for entries in people.values())
+        stored_model = self._data.get("model")
+        stored_detector = self._data.get("detector")
+
+        changed: str | None = None
+        if has_embeddings and stored_model and stored_model != model_name:
+            changed = "модель"
+        elif has_embeddings and stored_detector and stored_detector != detector_backend:
+            changed = "детектор"
+
+        dirty = False
+        if changed:
+            self._data["people"] = {}
+            dirty = True
+            _LOGGER.warning(
+                "Сменился %s распознавания (было %s/%s, стало %s/%s) — "
+                "эталоны сброшены, требуется пересоздать фото",
+                changed,
+                stored_model,
+                stored_detector,
+                model_name,
+                detector_backend,
+            )
+        if stored_model != model_name or stored_detector != detector_backend:
+            self._data["model"] = model_name
+            self._data["detector"] = detector_backend
+            dirty = True
+
+        if dirty:
+            await self._store.async_save(self._data)
+        return changed
 
     def _migrate(self) -> None:
         """Приводит записи к новому формату (эмбеддинг -> запись с id и фото)."""
@@ -140,15 +194,23 @@ class FaceStore:
             face_crop.crop_face, image, face.get("facial_area")
         )
 
-        # Если сменили модель — старые эмбеддинги несовместимы, очищаем.
-        if self._data.get("model") and self._data["model"] != model_name:
+        # Если сменили модель или детектор — старые эмбеддинги несовместимы,
+        # очищаем (обычно это уже сделал async_sync_config при перезагрузке).
+        stored_model = self._data.get("model")
+        stored_detector = self._data.get("detector")
+        if (stored_model and stored_model != model_name) or (
+            stored_detector and stored_detector != detector_backend
+        ):
             _LOGGER.warning(
-                "Сменилась модель распознавания (%s -> %s), эталоны сброшены",
-                self._data["model"],
+                "Сменились параметры распознавания (%s/%s -> %s/%s), эталоны сброшены",
+                stored_model,
+                stored_detector,
                 model_name,
+                detector_backend,
             )
             self._data["people"] = {}
         self._data["model"] = model_name
+        self._data["detector"] = detector_backend
 
         people = self._data.setdefault("people", {})
         people.setdefault(name, []).append(
