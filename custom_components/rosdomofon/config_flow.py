@@ -12,7 +12,6 @@ import time
 import aiohttp
 import voluptuous as vol
 from homeassistant import config_entries
-from homeassistant.components.file_upload import process_uploaded_file
 from homeassistant.core import callback
 from homeassistant.helpers import aiohttp_client, entity_registry as er, selector
 
@@ -30,7 +29,6 @@ from .const import (
     CONF_MODEL,
     CONF_PREFILTER,
     CONF_THRESHOLD,
-    DATA_FACE_STORE,
     DEFAULT_ANTISPOOF,
     DEFAULT_COOLDOWN,
     DEFAULT_DEBUG,
@@ -297,103 +295,24 @@ class RosdomofonOptionsFlow(config_entries.OptionsFlow):
             step_id="settings", data_schema=schema, errors=errors
         )
 
-    # --- Управление людьми ---
+    # --- Люди (галерея) ---
 
     async def async_step_people(self, user_input=None):
-        """Меню управления людьми."""
-        return self.async_show_menu(
-            step_id="people",
-            menu_options=["add_person", "remove_person", "gallery"],
-        )
-
-    async def async_step_gallery(self, user_input=None):
-        """Показывает ссылку на страницу галереи лиц (просмотр и удаление фото)."""
+        """Показывает ссылку на галерею лиц (добавление, просмотр, удаление фото)."""
         from .faces_view import faces_gallery_url
 
         if user_input is not None:
-            return await self.async_step_people()
+            return await self.async_step_init()
 
         url = faces_gallery_url(self.hass)
         if not url:
             return self.async_abort(reason="no_gallery_url")
 
         return self.async_show_form(
-            step_id="gallery",
+            step_id="people",
             data_schema=vol.Schema({}),
             description_placeholders={"url": url},
         )
-
-    async def async_step_add_person(self, user_input=None):
-        """Добавление человека: имя + фото (загрузка через UI)."""
-        errors: dict[str, str] = {}
-        opts = self.config_entry.options
-        store = self.hass.data.get(DOMAIN, {}).get(DATA_FACE_STORE)
-
-        if not opts.get(CONF_DEEPFACE_URL):
-            return self.async_abort(reason="configure_deepface_first")
-
-        if user_input is not None:
-            name = user_input["name"].strip()
-            file_id = user_input["photo"]
-            if not name:
-                errors["name"] = "empty_name"
-            else:
-                try:
-                    image = await self.hass.async_add_executor_job(
-                        self._read_uploaded_file, file_id
-                    )
-                    await store.async_add_person(
-                        name,
-                        image,
-                        opts[CONF_DEEPFACE_URL],
-                        opts.get(CONF_MODEL, DEFAULT_MODEL),
-                        opts.get(CONF_DETECTOR, DEFAULT_DETECTOR),
-                    )
-                    return await self.async_step_people()
-                except deepface_client.SpoofDetected:
-                    errors["base"] = "spoof_on_photo"
-                except deepface_client.NoFaceError:
-                    errors["base"] = "no_face"
-                except deepface_client.DeepFaceError as exc:
-                    _LOGGER.error("Ошибка добавления лица: %s", exc)
-                    errors["base"] = "deepface_error"
-
-        schema = vol.Schema({
-            vol.Required("name"): str,
-            vol.Required("photo"): selector.FileSelector(
-                selector.FileSelectorConfig(accept="image/*")
-            ),
-        })
-        return self.async_show_form(
-            step_id="add_person", data_schema=schema, errors=errors
-        )
-
-    async def async_step_remove_person(self, user_input=None):
-        """Удаление человека."""
-        store = self.hass.data.get(DOMAIN, {}).get(DATA_FACE_STORE)
-        people = store.people if store else []
-
-        if not people:
-            return self.async_abort(reason="no_people")
-
-        if user_input is not None:
-            await store.async_remove_person(user_input["name"])
-            return await self.async_step_people()
-
-        options = [
-            selector.SelectOptionDict(
-                value=name, label=f"{name} ({store.photo_count(name)} фото)"
-            )
-            for name in people
-        ]
-        schema = vol.Schema({
-            vol.Required("name"): selector.SelectSelector(
-                selector.SelectSelectorConfig(
-                    options=options, mode=selector.SelectSelectorMode.DROPDOWN
-                )
-            ),
-        })
-        return self.async_show_form(step_id="remove_person", data_schema=schema)
 
     # --- Привязка камер к замкам ---
 
@@ -433,10 +352,3 @@ class RosdomofonOptionsFlow(config_entries.OptionsFlow):
         return self.async_show_form(
             step_id="cameras", data_schema=vol.Schema(schema_dict)
         )
-
-    # --- Вспомогательное ---
-
-    def _read_uploaded_file(self, file_id: str) -> bytes:
-        """Читает загруженный через UI файл (в executor)."""
-        with process_uploaded_file(self.hass, file_id) as path:
-            return path.read_bytes()

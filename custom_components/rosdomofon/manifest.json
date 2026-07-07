@@ -7,7 +7,6 @@
   "config_flow": true,
   "dependencies": [
     "http",
-    "file_upload",
     "logbook"
   ],
   "documentation": "https://github.com/iljyxa/rosdomofon-ha",
@@ -16,5 +15,5 @@
   "requirements": [
     "requests"
   ],
-  "version": "1.9.1"
+  "version": "1.10.0"
 }

@@ -49,30 +49,8 @@
         }
       },
       "people": {
-        "title": "People",
-        "menu_options": {
-          "add_person": "Add person",
-          "remove_person": "Remove person",
-          "gallery": "Gallery & photo management"
-        }
-      },
-      "gallery": {
-        "title": "Face gallery",
-        "description": "Open the page to view and delete photos of all people:\n\n{url}\n\nPress 'Submit' to go back."
-      },
-      "add_person": {
-        "title": "Add person",
-        "description": "Enter a name and upload a face photo (frontal, good lighting).",
-        "data": {
-          "name": "Name",
-          "photo": "Face photo"
-        }
-      },
-      "remove_person": {
-        "title": "Remove person",
-        "data": {
-          "name": "Person"
-        }
+        "title": "People — face gallery",
+        "description": "Open the face gallery page — there you can add photos (by upload), view thumbnails and delete individual photos or a whole person:\n\n{url}\n\nPress 'Submit' to go back."
       },
       "cameras": {
         "title": "Cameras and locks",
@@ -80,15 +58,9 @@
       }
     },
     "error": {
-      "deepface_unreachable": "DeepFace service is not reachable at the given address.",
-      "no_face": "No face found in the photo. Try another photo.",
-      "deepface_error": "DeepFace did not respond in time. On first run it downloads models — wait a couple of minutes and try again.",
-      "spoof_on_photo": "The photo was detected as a spoof. Upload a normal face photo.",
-      "empty_name": "Please enter a name."
+      "deepface_unreachable": "DeepFace service is not reachable at the given address."
     },
     "abort": {
-      "configure_deepface_first": "First set the DeepFace service address in 'Service settings'.",
-      "no_people": "No people yet — add a person first.",
       "no_cameras": "No Rosdomofon cameras found.",
       "no_gallery_url": "Could not build the gallery link: no internal/external URL is configured in Home Assistant."
     }
