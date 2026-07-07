@@ -7,8 +7,8 @@ DeepFace), обрезанное фото лица и id (для поштучно
 
 Эмбеддинги зависят и от модели, и от детектора лиц (детектор задаёт
 кадрирование и выравнивание лица перед вычислением эмбеддинга). Поэтому в
-хранилище фиксируется и то, и другое: при смене любого из них сохранённые
-эталоны несовместимы с живыми кадрами и сбрасываются (см. async_sync_config).
+хранилище фиксируется и то, и другое: при смене любого из них эмбеддинги
+эталонов пересчитываются заново из сохранённых фото (см. async_reindex).
 
 Формат хранения (Store):
     {
@@ -72,52 +72,100 @@ class FaceStore:
             self._data.setdefault("detector", None)
             self._migrate()
 
-    async def async_sync_config(
+    def config_mismatch(
         self, model_name: str, detector_backend: str
     ) -> str | None:
-        """Сверяет модель/детектор с текущими настройками, сбрасывая эталоны при смене.
+        """Что изменилось относительно сохранённых эталонов: "модель"/"детектор"/None.
 
-        Эмбеддинги эталонов зависят и от модели, и от детектора: сменился любой —
-        сохранённые эмбеддинги больше несовместимы с живыми кадрами, иначе
-        распознавание молча «плывёт». Возвращает "модель"/"детектор", если эталоны
-        были сброшены, иначе None.
+        Эмбеддинги зависят и от модели, и от детектора (детектор задаёт
+        кадрирование и выравнивание лица). Если что-то сменилось — сохранённые
+        эмбеддинги несовместимы с живыми кадрами и их надо пересчитать заново из
+        сохранённых фото (см. async_reindex).
 
-        Прежний детектор может быть неизвестен (миграция со старого формата без
-        поля detector) — в этом случае эталоны НЕ трогаем, а просто фиксируем
-        текущий детектор как эталонный (считаем, что фото сняты именно им).
+        Возвращает None, если эталонов с эмбеддингами нет либо прежняя модель/
+        детектор неизвестны (миграция со старого формата) — тогда пересчёт не
+        нужен, достаточно зафиксировать текущий конфиг (async_set_config).
         """
-        people = self._data.setdefault("people", {})
-        has_embeddings = any(entries for entries in people.values())
+        if not any(entries for entries in self._data.get("people", {}).values()):
+            return None
         stored_model = self._data.get("model")
         stored_detector = self._data.get("detector")
+        if stored_model and stored_model != model_name:
+            return "модель"
+        if stored_detector and stored_detector != detector_backend:
+            return "детектор"
+        return None
 
-        changed: str | None = None
-        if has_embeddings and stored_model and stored_model != model_name:
-            changed = "модель"
-        elif has_embeddings and stored_detector and stored_detector != detector_backend:
-            changed = "детектор"
-
-        dirty = False
-        if changed:
-            self._data["people"] = {}
-            dirty = True
-            _LOGGER.warning(
-                "Сменился %s распознавания (было %s/%s, стало %s/%s) — "
-                "эталоны сброшены, требуется пересоздать фото",
-                changed,
-                stored_model,
-                stored_detector,
-                model_name,
-                detector_backend,
-            )
-        if stored_model != model_name or stored_detector != detector_backend:
+    async def async_set_config(self, model_name: str, detector_backend: str) -> None:
+        """Фиксирует текущие модель/детектор (без пересчёта эталонов)."""
+        if (
+            self._data.get("model") != model_name
+            or self._data.get("detector") != detector_backend
+        ):
             self._data["model"] = model_name
             self._data["detector"] = detector_backend
-            dirty = True
-
-        if dirty:
             await self._store.async_save(self._data)
-        return changed
+
+    async def async_reindex(
+        self, base_url: str, model_name: str, detector_backend: str
+    ) -> tuple[int, int]:
+        """Пересчитывает эмбеддинги всех эталонов из сохранённых фото лиц.
+
+        Нужен при смене модели/детектора: сами фото в хранилище остаются, меняется
+        только способ вычисления эмбеддинга. Возвращает (recomputed, dropped), где
+        dropped — записи, которые пришлось выбросить (нет сохранённого фото или на
+        нём новый детектор больше не находит лицо).
+
+        При сетевой ошибке/недоступности сервиса поднимает DeepFaceError, НЕ меняя
+        состояние хранилища — так пересчёт откладывается до следующего рестарта, а
+        эталоны не теряются.
+        """
+        people = self._data.get("people", {})
+        rebuilt: dict = {}
+        recomputed = dropped = 0
+        for name, entries in people.items():
+            new_entries = []
+            for entry in entries:
+                photo_b64 = entry.get("photo")
+                if not photo_b64:
+                    dropped += 1
+                    continue
+                try:
+                    image = base64.b64decode(photo_b64)
+                except (ValueError, TypeError):
+                    dropped += 1
+                    continue
+                # anti_spoofing выключен: считаем эмбеддинг с чистого фото лица.
+                faces = await self._hass.async_add_executor_job(
+                    deepface_client.represent_faces,
+                    base_url,
+                    image,
+                    model_name,
+                    detector_backend,
+                    False,
+                )
+                if not faces:
+                    dropped += 1
+                    continue
+                face = max(faces, key=lambda f: _area_size(f.get("facial_area")))
+                new_entries.append({**entry, "embedding": face["embedding"]})
+                recomputed += 1
+            if new_entries:
+                rebuilt[name] = new_entries
+
+        # Дошли сюда без сетевых ошибок — фиксируем результат.
+        self._data["people"] = rebuilt
+        self._data["model"] = model_name
+        self._data["detector"] = detector_backend
+        await self._store.async_save(self._data)
+        _LOGGER.info(
+            "Эталоны пересчитаны под %s/%s: обновлено %d, отброшено %d",
+            model_name,
+            detector_backend,
+            recomputed,
+            dropped,
+        )
+        return recomputed, dropped
 
     def _migrate(self) -> None:
         """Приводит записи к новому формату (эмбеддинг -> запись с id и фото)."""
@@ -194,19 +242,14 @@ class FaceStore:
             face_crop.crop_face, image, face.get("facial_area")
         )
 
-        # Если сменили модель или детектор — старые эмбеддинги несовместимы,
-        # очищаем (обычно это уже сделал async_sync_config при перезагрузке).
-        stored_model = self._data.get("model")
-        stored_detector = self._data.get("detector")
-        if (stored_model and stored_model != model_name) or (
-            stored_detector and stored_detector != detector_backend
-        ):
+        # Смена модели несовместима со старыми эмбеддингами — очищаем (смена
+        # детектора обрабатывается пересчётом в async_reindex при перезагрузке,
+        # без потери фото).
+        if self._data.get("model") and self._data["model"] != model_name:
             _LOGGER.warning(
-                "Сменились параметры распознавания (%s/%s -> %s/%s), эталоны сброшены",
-                stored_model,
-                stored_detector,
+                "Сменилась модель распознавания (%s -> %s), эталоны сброшены",
+                self._data["model"],
                 model_name,
-                detector_backend,
             )
             self._data["people"] = {}
         self._data["model"] = model_name

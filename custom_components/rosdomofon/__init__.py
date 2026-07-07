@@ -26,6 +26,7 @@ from .const import (
     ENROLL_LINK_DEFAULT_TTL_HOURS,
     SHARE_LINK_DEFAULT_TTL_HOURS,
 )
+from . import deepface_client
 from .debug_view import debug_gallery_url, setup_debug_view
 from .enroll import EnrollLinkManager
 from .faces_view import (
@@ -87,22 +88,51 @@ async def async_setup_entry(hass, entry) -> bool:
         hass.data[DOMAIN][DATA_FACE_STORE] = face_store
 
     # Модель/детектор задают, как считаются эмбеддинги эталонов. Если пользователь
-    # сменил детектор (или модель) в настройках — старые эталоны несовместимы с
-    # живыми кадрами, сбрасываем их и просим пересоздать фото. Иначе распознавание
+    # сменил детектор (или модель) в настройках — эмбеддинги пересчитываются заново
+    # из сохранённых фото лиц (сами фото остаются в хранилище). Иначе распознавание
     # молча «плывёт»: и своих пропускает, и чужих пускает.
-    reset_reason = await face_store.async_sync_config(
-        entry.options.get(CONF_MODEL, DEFAULT_MODEL),
-        entry.options.get(CONF_DETECTOR, DEFAULT_DETECTOR),
-    )
-    if reset_reason:
-        persistent_notification.async_create(
-            hass,
-            f"Сменился **{reset_reason}** распознавания лиц — сохранённые эталоны "
-            f"больше не действительны и были сброшены. Добавьте фото людей заново "
-            f"(лучше всего — сняв их той же камерой домофона).",
-            title="Росдомофон: эталоны лиц сброшены ♻️",
-            notification_id="rosdomofon_faces_reset",
-        )
+    model = entry.options.get(CONF_MODEL, DEFAULT_MODEL)
+    detector = entry.options.get(CONF_DETECTOR, DEFAULT_DETECTOR)
+    mismatch = face_store.config_mismatch(model, detector)
+    if mismatch:
+        url = entry.options.get(CONF_DEEPFACE_URL, "")
+        if not url:
+            persistent_notification.async_create(
+                hass,
+                f"Сменился **{mismatch}** распознавания лиц. Эталоны нужно пересчитать, "
+                f"но сервис DeepFace не настроен — укажите его URL в настройках, и пересчёт "
+                f"выполнится автоматически. Эталоны сохранены.",
+                title="Росдомофон: нужен пересчёт эталонов ⏳",
+                notification_id="rosdomofon_faces_reindex",
+            )
+        else:
+            try:
+                recomputed, dropped = await face_store.async_reindex(url, model, detector)
+            except deepface_client.DeepFaceError:
+                persistent_notification.async_create(
+                    hass,
+                    f"Сменился **{mismatch}** распознавания лиц, но пересчитать эталоны "
+                    f"сейчас не удалось — сервис DeepFace недоступен. Попытка повторится "
+                    f"при следующем перезапуске. Эталоны сохранены.",
+                    title="Росдомофон: пересчёт эталонов отложен ⏳",
+                    notification_id="rosdomofon_faces_reindex",
+                )
+            else:
+                msg = (
+                    f"Сменился **{mismatch}** распознавания лиц — эталоны пересчитаны "
+                    f"из сохранённых фото (обновлено {recomputed}"
+                )
+                if dropped:
+                    msg += f", отброшено {dropped}: без сохранённого фото или лицо не найдено"
+                msg += ")."
+                persistent_notification.async_create(
+                    hass,
+                    msg,
+                    title="Росдомофон: эталоны лиц пересчитаны ♻️",
+                    notification_id="rosdomofon_faces_reindex",
+                )
+    else:
+        await face_store.async_set_config(model, detector)
 
     coordinator = FaceUnlockCoordinator(hass, face_store, dict(entry.options))
     hass.data[DOMAIN][entry.entry_id]["face_coordinator"] = coordinator
