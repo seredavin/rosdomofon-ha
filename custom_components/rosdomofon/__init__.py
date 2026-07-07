@@ -55,7 +55,7 @@ SERVICE_GENERATE_LINK_SCHEMA = vol.Schema({
 # Схема сервиса генерации ссылки на добавление лица
 SERVICE_GENERATE_ENROLL = "generate_enroll_link"
 SERVICE_GENERATE_ENROLL_SCHEMA = vol.Schema({
-    vol.Required("camera"): cv.entity_id,
+    vol.Optional("camera"): cv.entity_id,
     vol.Required("person"): vol.All(cv.string, vol.Length(min=1)),
     vol.Optional("ttl_hours", default=ENROLL_LINK_DEFAULT_TTL_HOURS): vol.All(
         vol.Coerce(float), vol.Range(min=0.5, max=168)
@@ -189,7 +189,7 @@ async def async_setup_entry(hass, entry) -> bool:
     if not hass.services.has_service(DOMAIN, SERVICE_GENERATE_ENROLL):
         async def handle_generate_enroll(call):
             """Обработчик сервиса rosdomofon.generate_enroll_link."""
-            camera = call.data["camera"]
+            camera = call.data.get("camera")
             person = call.data["person"].strip()
             ttl_hours = call.data.get("ttl_hours", ENROLL_LINK_DEFAULT_TTL_HOURS)
 
@@ -216,10 +216,11 @@ async def async_setup_entry(hass, entry) -> bool:
                 return
 
             ttl_text = f"{int(ttl_hours)} ч" if ttl_hours == int(ttl_hours) else f"{ttl_hours} ч"
+            cam_text = f"камера {camera}, " if camera else ""
             persistent_notification.async_create(
                 hass,
                 f"Ссылка для добавления лица **{person}** "
-                f"(камера {camera}, действительна {ttl_text}):\n\n"
+                f"({cam_text}действительна {ttl_text}):\n\n"
                 f"`{url}`\n\n"
                 f"Откройте на телефоне: снимите лицо с камеры или загрузите фото. "
                 f"⚠️ По ссылке можно добавить лицо в список «своих» — не пересылайте посторонним.",

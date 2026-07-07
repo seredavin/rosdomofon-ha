@@ -8,6 +8,7 @@ import pytest
 from homeassistant.core import HomeAssistant
 
 from custom_components.rosdomofon import deepface_client, face_crop
+from custom_components.rosdomofon.const import DOMAIN
 from custom_components.rosdomofon.face_store import FaceStore
 from custom_components.rosdomofon.enroll import EnrollLinkManager
 
@@ -158,7 +159,7 @@ async def test_enroll_capture_adds_face(hass: HomeAssistant):
     wh_id = _make_link(hass, manager, person="Ivan")
 
     request = MagicMock(method="POST", content_type="application/json")
-    request.json = AsyncMock(return_value={"action": "capture"})
+    request.json = AsyncMock(return_value={"action": "capture", "camera": "camera.dvor"})
     image = MagicMock(content=b"frame", content_type="image/jpeg")
 
     with patch("custom_components.rosdomofon.enroll.async_get_image", AsyncMock(return_value=image)), \
@@ -180,7 +181,7 @@ async def test_enroll_capture_no_face(hass: HomeAssistant):
     wh_id = _make_link(hass, manager, person="Ivan")
 
     request = MagicMock(method="POST", content_type="application/json")
-    request.json = AsyncMock(return_value={"action": "capture"})
+    request.json = AsyncMock(return_value={"action": "capture", "camera": "camera.dvor"})
     image = MagicMock(content=b"frame", content_type="image/jpeg")
 
     with patch("custom_components.rosdomofon.enroll.async_get_image", AsyncMock(return_value=image)), \
@@ -256,11 +257,47 @@ async def test_enroll_without_camera(hass: HomeAssistant):
 
 
 @pytest.mark.asyncio
+async def test_enroll_unbound_uses_rosdomofon_cameras(hass: HomeAssistant):
+    """Единый механизм: ссылка без камеры предлагает съёмку с камер Росдомофон."""
+    from homeassistant.helpers import entity_registry as er
+
+    reg = er.async_get(hass)
+    reg.async_get_or_create("camera", DOMAIN, "cam1", suggested_object_id="dvor")
+
+    store = FaceStore(hass)
+    await store.async_load()
+    manager = _manager(hass, store)
+    wh_id = _make_link(hass, manager, person="Ivan", camera=None)
+
+    # Страница показывает предпросмотр (камера доступна)
+    page_req = MagicMock(method="GET", query={})
+    page = await manager._handle_webhook(hass, wh_id, page_req)
+    assert 'id="preview"' in page.text
+
+    # Съёмка с найденной камеры работает
+    cap_req = MagicMock(method="POST", content_type="application/json")
+    cap_req.json = AsyncMock(return_value={"action": "capture", "camera": "camera.dvor"})
+    image = MagicMock(content=b"frame", content_type="image/jpeg")
+    with patch("custom_components.rosdomofon.enroll.async_get_image", AsyncMock(return_value=image)), \
+         patch("custom_components.rosdomofon.deepface_client.represent_faces",
+               return_value=[{"embedding": [1.0, 0.0], "facial_area": None, "confidence": 0.9}]):
+        resp = await manager._handle_webhook(hass, wh_id, cap_req)
+    assert json.loads(resp.body)["status"] == "ok"
+    assert store.photo_count("Ivan") == 1
+
+    # Чужая камера (не Росдомофон) отклоняется
+    bad_req = MagicMock(method="POST", content_type="application/json")
+    bad_req.json = AsyncMock(return_value={"action": "capture", "camera": "camera.other"})
+    resp2 = await manager._handle_webhook(hass, wh_id, bad_req)
+    assert json.loads(resp2.body)["status"] == "error"
+
+
+@pytest.mark.asyncio
 async def test_enroll_snapshot(hass: HomeAssistant):
     manager = _manager(hass, FaceStore(hass))
     wh_id = _make_link(hass, manager)
 
-    request = MagicMock(method="GET", query={"snapshot": "1"})
+    request = MagicMock(method="GET", query={"snapshot": "1", "camera": "camera.dvor"})
     image = MagicMock(content=b"jpegbytes", content_type="image/jpeg")
     with patch("custom_components.rosdomofon.enroll.async_get_image", AsyncMock(return_value=image)):
         resp = await manager._handle_webhook(hass, wh_id, request)

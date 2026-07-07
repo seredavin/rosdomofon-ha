@@ -37,6 +37,25 @@ from .share import ExternalURLNotAvailable
 _LOGGER = logging.getLogger(__name__)
 
 
+def _rosdomofon_cameras(hass: HomeAssistant) -> list[dict]:
+    """Список камер, созданных интеграцией: [{"id": entity_id, "name": ...}]."""
+    from homeassistant.helpers import entity_registry as er
+
+    registry = er.async_get(hass)
+    cameras = []
+    for entry in registry.entities.values():
+        if entry.domain == "camera" and entry.platform == DOMAIN:
+            state = hass.states.get(entry.entity_id)
+            name = (
+                (state.name if state else None)
+                or entry.name
+                or entry.original_name
+                or entry.entity_id
+            )
+            cameras.append({"id": entry.entity_id, "name": name})
+    return cameras
+
+
 @dataclass
 class EnrollLink:
     """Одна временная ссылка для добавления лица человеку."""
@@ -160,9 +179,10 @@ class EnrollLinkManager:
         # GET: снимок для предпросмотра или сама страница
         if request.method == hdrs.METH_GET:
             if request.query.get("snapshot"):
-                if not link.camera_entity_id:
+                camera = request.query.get("camera")
+                if not camera or camera not in self._allowed_camera_ids(link):
                     return web.Response(status=404, text="no camera")
-                return await self._serve_snapshot(link.camera_entity_id)
+                return await self._serve_snapshot(camera)
             return self._serve_page(link)
 
         # POST: загрузка файла (multipart) или действие в JSON
@@ -212,14 +232,13 @@ class EnrollLinkManager:
         action = body.get("action")
 
         if action == "capture":
-            if not link.camera_entity_id:
+            camera = body.get("camera")
+            if not camera or camera not in self._allowed_camera_ids(link):
                 return web.json_response(
-                    {"status": "error", "message": "Камера не привязана к этой ссылке."}
+                    {"status": "error", "message": "Камера недоступна."}
                 )
             try:
-                image = await async_get_image(
-                    self.hass, link.camera_entity_id, timeout=10
-                )
+                image = await async_get_image(self.hass, camera, timeout=10)
             except Exception:  # noqa: BLE001
                 return web.json_response(
                     {
@@ -281,16 +300,28 @@ class EnrollLinkManager:
             "count": self._face_store.photo_count(person),
         }
 
-    def _serve_page(self, link: EnrollLink) -> web.Response:
-        camera_name = None
+    def _cameras_for_link(self, link: EnrollLink) -> list[dict]:
+        """Камеры, доступные на странице ссылки.
+
+        Если ссылка создана с конкретной камерой — только она; иначе все камеры
+        Росдомофон (единый механизм: и сервис, и ссылка из галереи умеют съёмку).
+        """
         if link.camera_entity_id:
             state = self.hass.states.get(link.camera_entity_id)
-            camera_name = state.name if state else link.camera_entity_id
+            name = state.name if state else link.camera_entity_id
+            return [{"id": link.camera_entity_id, "name": name}]
+        return _rosdomofon_cameras(self.hass)
+
+    def _allowed_camera_ids(self, link: EnrollLink) -> set[str]:
+        """Множество camera entity_id, разрешённых для съёмки по этой ссылке."""
+        return {c["id"] for c in self._cameras_for_link(link)}
+
+    def _serve_page(self, link: EnrollLink) -> web.Response:
         remaining = max(0, link.expires_at - time.time())
         return web.Response(
             text=_enroll_page(
                 person=link.person_name,
-                camera_name=camera_name,
+                cameras=self._cameras_for_link(link),
                 remaining_h=int(remaining // 3600),
                 remaining_m=int((remaining % 3600) // 60),
                 photos=self._face_store.photos(link.person_name),
@@ -327,29 +358,38 @@ def _thumb_html(photo: dict) -> str:
 
 def _enroll_page(
     person: str,
-    camera_name: str | None,
+    cameras: list[dict],
     remaining_h: int,
     remaining_m: int,
     photos: list[dict],
 ) -> str:
-    """Страница добавления лица: (опц.) предпросмотр камеры, съёмка, загрузка, эскизы."""
+    """Страница добавления лица: съёмка с камеры (одна/несколько) и/или загрузка."""
     person_e = html.escape(person, quote=True)
     thumbs = "".join(_thumb_html(p) for p in photos)
     person_json = json.dumps(person)
-    has_camera = camera_name is not None
+    has_camera = bool(cameras)
+    default_cam_json = json.dumps(cameras[0]["id"] if has_camera else None)
+    sub = f"Ссылка активна ещё {remaining_h}ч {remaining_m}м"
+
+    selector = ""
+    if len(cameras) > 1:
+        opts = "".join(
+            f'<option value="{html.escape(c["id"], quote=True)}">{html.escape(c["name"], quote=True)}</option>'
+            for c in cameras
+        )
+        selector = f'<select id="camsel" class="camsel">{opts}</select>'
 
     if has_camera:
-        sub = f"Камера: {html.escape(camera_name, quote=True)} · ссылка активна ещё {remaining_h}ч {remaining_m}м"
         camera_block = (
+            f"{selector}"
             '<img class="preview" id="preview" alt="предпросмотр камеры">'
             '<div class="btns">'
             '<button class="act" id="cap">📸 Снять с камеры</button>'
             '<label class="upload">⬆️ Загрузить фото<input type="file" id="file" accept="image/*"></label>'
             "</div>"
         )
-        hint = "Встаньте ровно к камере и нажмите «Снять», либо загрузите фото."
+        hint = "Наведите камеру на лицо и нажмите «Снять», либо загрузите фото."
     else:
-        sub = f"Ссылка активна ещё {remaining_h}ч {remaining_m}м"
         camera_block = (
             '<div class="btns">'
             '<label class="upload wide">⬆️ Загрузить фото<input type="file" id="file" accept="image/*"></label>'
@@ -368,6 +408,9 @@ def _enroll_page(
   .wrap {{ max-width:480px; margin:0 auto; padding:20px 16px 40px; }}
   h1 {{ font-size:1.15rem; margin:6px 0; }}
   .sub {{ font-size:.85rem; opacity:.9; margin-bottom:16px; }}
+  .camsel {{ width:100%; padding:12px; border-radius:12px; border:1px solid #ffffff55;
+            background:#ffffff22; color:#fff; font-size:1rem; margin-bottom:12px; }}
+  .camsel option {{ color:#222; }}
   .preview {{ width:100%; aspect-ratio:4/3; background:#0004; border-radius:16px;
              object-fit:cover; display:block; }}
   .btns {{ display:flex; gap:10px; margin:14px 0; }}
@@ -411,17 +454,22 @@ def _enroll_page(
   const count = document.getElementById('count');
   const cap = document.getElementById('cap');
   const preview = document.getElementById('preview');
+  const camsel = document.getElementById('camsel');
   const person = {person_json};
+  let currentCamera = {default_cam_json};
+
+  if (camsel) camsel.addEventListener('change', () => {{ currentCamera = camsel.value; }});
 
   function setStatus(msg, ok) {{ status.textContent = msg; status.className = 'status ' + (ok ? 'ok' : 'err'); }}
   function esc(s) {{ const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }}
 
   if (preview) {{
     (function poll() {{
+      if (!currentCamera) {{ setTimeout(poll, 1000); return; }}
       const img = new Image();
       img.onload = () => {{ preview.src = img.src; setTimeout(poll, 2500); }};
       img.onerror = () => setTimeout(poll, 4000);
-      img.src = base + '?snapshot=1&t=' + Date.now();
+      img.src = base + '?snapshot=1&camera=' + encodeURIComponent(currentCamera) + '&t=' + Date.now();
     }})();
   }}
 
@@ -448,7 +496,7 @@ def _enroll_page(
     cap.disabled = true; setStatus('Снимаю и распознаю…', true);
     try {{
       const r = await fetch(base, {{ method:'POST', headers:{{'Content-Type':'application/json'}},
-        body: JSON.stringify({{action:'capture'}}) }});
+        body: JSON.stringify({{action:'capture', camera: currentCamera}}) }});
       const d = await r.json();
       setStatus(d.message, d.status === 'ok');
       if (d.status === 'ok') await refresh();
