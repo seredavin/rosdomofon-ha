@@ -122,6 +122,16 @@ async def test_faces_post_rejects_without_signature(hass: HomeAssistant):
 
 
 def _multipart_request(hass, form):
+    from multidict import MultiDict
+
+    post = MultiDict()
+    for key, value in form.items():
+        if key == "photo":
+            for field in (value if isinstance(value, list) else [value]):
+                post.add("photo", field)
+        else:
+            post.add(key, value)
+
     signed = sign_proxy_path(hass, "/api/rosdomofon/faces")
     sig = signed.split("sig=", 1)[1]
     req = MagicMock(
@@ -130,8 +140,14 @@ def _multipart_request(hass, form):
         content_type="multipart/form-data",
     )
     req.get.return_value = False
-    req.post = AsyncMock(return_value=form)
+    req.post = AsyncMock(return_value=post)
     return req
+
+
+def _file(data: bytes):
+    field = MagicMock()
+    field.file = io.BytesIO(data)
+    return field
 
 
 def _with_deepface_entry(hass):
@@ -160,6 +176,30 @@ async def test_faces_add_photo(hass: HomeAssistant):
     data = json.loads(resp.body)
     assert data["status"] == "ok"
     assert store.photo_count("Пётр") == 1
+
+
+@pytest.mark.asyncio
+async def test_faces_add_multiple_photos(hass: HomeAssistant):
+    store = await _store_with_people(hass)
+    _with_deepface_entry(hass)
+    req = _multipart_request(
+        hass, {"name": "Пётр", "photo": [_file(b"a"), _file(b"b"), _file(b"c")]}
+    )
+    view = RosdomofonFacesView(hass)
+    # Первый и третий — с лицом, второй — без
+    seq = [
+        [{"embedding": [1.0, 0.0], "facial_area": None, "confidence": 0.9}],
+        [],
+        [{"embedding": [0.0, 1.0], "facial_area": None, "confidence": 0.9}],
+    ]
+    with patch("custom_components.rosdomofon.deepface_client.represent_faces", side_effect=seq):
+        resp = await view.post(req)
+
+    data = json.loads(resp.body)
+    assert data["status"] == "ok"
+    assert "добавлено 2" in data["message"]
+    assert "без лица 1" in data["message"]
+    assert store.photo_count("Пётр") == 2
 
 
 @pytest.mark.asyncio

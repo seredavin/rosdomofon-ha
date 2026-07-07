@@ -21,6 +21,24 @@ def _response(status, payload):
     return resp
 
 
+def _file(data: bytes):
+    field = MagicMock()
+    field.file = io.BytesIO(data)
+    return field
+
+
+def _upload_request(datas):
+    """POST-запрос загрузки одного/нескольких фото (multipart)."""
+    from multidict import MultiDict
+
+    post = MultiDict()
+    for data in datas:
+        post.add("photo", _file(data))
+    req = MagicMock(method="POST", content_type="multipart/form-data")
+    req.post = AsyncMock(return_value=post)
+    return req
+
+
 def _jpeg(size=(300, 300), color=(120, 120, 120)) -> bytes:
     from PIL import Image
 
@@ -201,11 +219,7 @@ async def test_enroll_upload_and_delete(hass: HomeAssistant):
     wh_id = _make_link(hass, manager, person="Ivan")
 
     # Загрузка фото (multipart)
-    field = MagicMock()
-    field.file = io.BytesIO(b"uploaded")
-    upload_req = MagicMock(method="POST", content_type="multipart/form-data")
-    upload_req.post = AsyncMock(return_value={"photo": field})
-
+    upload_req = _upload_request([b"uploaded"])
     with patch("custom_components.rosdomofon.deepface_client.represent_faces",
                return_value=[{"embedding": [1.0, 0.0], "facial_area": None, "confidence": 0.9}]):
         resp = await manager._handle_webhook(hass, wh_id, upload_req)
@@ -245,15 +259,35 @@ async def test_enroll_without_camera(hass: HomeAssistant):
     assert json.loads(resp2.body)["status"] == "error"
 
     # Загрузка фото работает
-    field = MagicMock()
-    field.file = io.BytesIO(b"uploaded")
-    up_req = MagicMock(method="POST", content_type="multipart/form-data")
-    up_req.post = AsyncMock(return_value={"photo": field})
+    up_req = _upload_request([b"uploaded"])
     with patch("custom_components.rosdomofon.deepface_client.represent_faces",
                return_value=[{"embedding": [1.0, 0.0], "facial_area": None, "confidence": 0.9}]):
         resp3 = await manager._handle_webhook(hass, wh_id, up_req)
     assert json.loads(resp3.body)["status"] == "ok"
     assert store.photo_count("Ivan") == 1
+
+
+@pytest.mark.asyncio
+async def test_enroll_upload_multiple(hass: HomeAssistant):
+    """Загрузка нескольких фото за один запрос по ссылке."""
+    store = FaceStore(hass)
+    await store.async_load()
+    manager = _manager(hass, store)
+    wh_id = _make_link(hass, manager, person="Ivan", camera=None)
+
+    up_req = _upload_request([b"a", b"b", b"c"])
+    seq = [
+        [{"embedding": [1.0, 0.0], "facial_area": None, "confidence": 0.9}],
+        [],
+        [{"embedding": [0.0, 1.0], "facial_area": None, "confidence": 0.9}],
+    ]
+    with patch("custom_components.rosdomofon.deepface_client.represent_faces", side_effect=seq):
+        resp = await manager._handle_webhook(hass, wh_id, up_req)
+
+    data = json.loads(resp.body)
+    assert data["status"] == "ok"
+    assert "добавлено 2" in data["message"]
+    assert store.photo_count("Ivan") == 2
 
 
 @pytest.mark.asyncio

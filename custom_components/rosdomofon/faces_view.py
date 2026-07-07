@@ -78,6 +78,20 @@ def _enroll_manager(hass: HomeAssistant):
     return None
 
 
+def _upload_summary(name: str, added: int, no_face: int, errors: int) -> tuple[str, str]:
+    """Строит статус и сообщение по результату загрузки нескольких фото."""
+    parts = []
+    if added:
+        parts.append(f"добавлено {added}")
+    if no_face:
+        parts.append(f"без лица {no_face}")
+    if errors:
+        parts.append(f"ошибок {errors}")
+    status = "ok" if added else "error"
+    detail = ", ".join(parts) if parts else "нет подходящих файлов"
+    return status, f"«{name}»: {detail}"
+
+
 def _deepface_config(hass: HomeAssistant) -> dict | None:
     """Возвращает конфиг DeepFace из первой настроенной записи (или None)."""
     for entry in hass.config_entries.async_entries(DOMAIN):
@@ -173,37 +187,43 @@ class RosdomofonFacesView(HomeAssistantView):
         return payload
 
     async def _handle_add(self, request: web.Request) -> web.Response:
-        """Добавляет фото человеку из загруженного файла."""
+        """Добавляет человеку одно или несколько загруженных фото."""
         try:
             post = await request.post()
         except Exception as exc:  # noqa: BLE001
-            return self._add_result("error", f"Не удалось прочитать файл: {exc}")
+            return self._add_result("error", f"Не удалось прочитать файлы: {exc}")
 
         name = (post.get("name") or "").strip()
         if not name:
             return self._add_result("error", "Введите имя человека.")
 
-        field = post.get("photo")
-        image_bytes = field.file.read() if field is not None and hasattr(field, "file") else None
-        if not image_bytes:
-            return self._add_result("error", "Файл не получен.")
+        files = [f for f in post.getall("photo") if hasattr(f, "file")]
+        if not files:
+            return self._add_result("error", "Файлы не получены.")
 
         cfg = _deepface_config(self.hass)
         if not cfg:
             return self._add_result("error", "Сервис DeepFace не настроен.")
 
         store = _face_store(self.hass)
-        try:
-            await store.async_add_person(
-                name, image_bytes, cfg["url"], cfg["model"], cfg["detector"]
-            )
-        except deepface_client.NoFaceError:
-            return self._add_result("error", "Лицо на фото не найдено. Возьмите фото анфас.")
-        except deepface_client.DeepFaceError as exc:
-            _LOGGER.error("Ошибка добавления фото для «%s»: %s", name, exc)
-            return self._add_result("error", "Ошибка распознавания. Попробуйте другое фото.")
+        added = no_face = errors = 0
+        for field in files:
+            data = field.file.read()
+            if not data:
+                continue
+            try:
+                await store.async_add_person(
+                    name, data, cfg["url"], cfg["model"], cfg["detector"]
+                )
+                added += 1
+            except deepface_client.NoFaceError:
+                no_face += 1
+            except deepface_client.DeepFaceError as exc:
+                _LOGGER.error("Ошибка добавления фото для «%s»: %s", name, exc)
+                errors += 1
 
-        return self._add_result("ok", f"Фото добавлено к «{name}».")
+        status, message = _upload_summary(name, added, no_face, errors)
+        return self._add_result(status, message)
 
     def _add_result(self, status: str, message: str) -> web.Response:
         payload = self._people_payload()
@@ -244,7 +264,7 @@ def _person_card(person: dict) -> str:
         f'<button class="btn primary addphoto">Добавить фото</button>'
         f'<button class="btn enroll">Ссылка для загрузки</button>'
         f'<button class="btn danger delperson">Удалить</button>'
-        f'<input type="file" class="pfile" accept="image/*" hidden></div>'
+        f'<input type="file" class="pfile" accept="image/*" multiple hidden></div>'
         f"</div>"
     )
 
@@ -317,9 +337,9 @@ def _render_page(people: list[dict]) -> str:
       <input type="text" id="newname" placeholder="Имя человека">
       <button class="btn" id="createnew">Создать без фото</button>
       <button class="btn primary" id="uploadnew">Загрузить фото</button>
-      <input type="file" id="newfile" accept="image/*" hidden>
+      <input type="file" id="newfile" accept="image/*" multiple hidden>
     </div>
-    <div class="hint">Создайте человека без фото или сразу загрузите фото. Фото автоматически обрезается по лицу.</div>
+    <div class="hint">Создайте человека без фото или сразу загрузите одно/несколько фото. Фото автоматически обрезается по лицу.</div>
   </div>
 
   <div class="status" id="status"></div>
@@ -364,7 +384,7 @@ def _render_page(people: list[dict]) -> str:
       '<button class="btn primary addphoto">Добавить фото</button>' +
       '<button class="btn enroll">Ссылка для загрузки</button>' +
       '<button class="btn danger delperson">Удалить</button>' +
-      '<input type="file" class="pfile" accept="image/*" hidden></div></div>';
+      '<input type="file" class="pfile" accept="image/*" multiple hidden></div></div>';
   }}
 
   function render(people) {{
@@ -382,10 +402,12 @@ def _render_page(people: list[dict]) -> str:
     return d;
   }}
 
-  async function uploadPhoto(name, file) {{
+  async function uploadPhoto(name, files) {{
     if (!name) {{ setStatus('Введите имя человека.', false); return; }}
-    setStatus('Загружаю и распознаю…', true);
-    const fd = new FormData(); fd.append('name', name); fd.append('photo', file);
+    if (!files || !files.length) return;
+    setStatus('Загружаю ' + files.length + ' фото…', true);
+    const fd = new FormData(); fd.append('name', name);
+    for (const f of files) fd.append('photo', f);
     try {{
       const r = await fetch(base, {{ method:'POST', body: fd }});
       const d = await r.json();
@@ -413,7 +435,7 @@ def _render_page(people: list[dict]) -> str:
     newfile.click();
   }});
   newfile.addEventListener('change', e => {{
-    if (e.target.files[0]) uploadPhoto(newname.value.trim(), e.target.files[0]);
+    if (e.target.files.length) uploadPhoto(newname.value.trim(), e.target.files);
     e.target.value = '';
   }});
   document.getElementById('copylink').addEventListener('click', () => {{
@@ -443,7 +465,7 @@ def _render_page(people: list[dict]) -> str:
   root.addEventListener('change', e => {{
     if (e.target.classList.contains('pfile')) {{
       const person = e.target.closest('.person');
-      if (person && e.target.files[0]) uploadPhoto(person.dataset.name, e.target.files[0]);
+      if (person && e.target.files.length) uploadPhoto(person.dataset.name, e.target.files);
       e.target.value = '';
     }}
   }});

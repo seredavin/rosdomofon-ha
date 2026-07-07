@@ -209,18 +209,59 @@ class EnrollLinkManager:
             post = await request.post()
         except Exception as exc:  # noqa: BLE001
             return web.json_response(
-                {"status": "error", "message": f"Не удалось прочитать файл: {exc}"},
+                {"status": "error", "message": f"Не удалось прочитать файлы: {exc}"},
                 status=400,
             )
-        field_value = post.get("photo")
-        image_bytes = None
-        if field_value is not None and hasattr(field_value, "file"):
-            image_bytes = field_value.file.read()
-        if not image_bytes:
+        files = [f for f in post.getall("photo") if hasattr(f, "file")]
+        if not files:
             return web.json_response(
-                {"status": "error", "message": "Файл не получен."}, status=400
+                {"status": "error", "message": "Файлы не получены."}, status=400
             )
-        return web.json_response(await self._enroll(link.person_name, image_bytes))
+        url = self._config.get("url")
+        if not url:
+            return web.json_response(
+                {"status": "error", "message": "Сервис DeepFace не настроен."}
+            )
+
+        added = no_face = errors = 0
+        for field in files:
+            data = field.file.read()
+            if not data:
+                continue
+            try:
+                await self._face_store.async_add_person(
+                    link.person_name,
+                    data,
+                    url,
+                    self._config.get("model"),
+                    self._config.get("detector"),
+                )
+                added += 1
+            except deepface_client.NoFaceError:
+                no_face += 1
+            except deepface_client.DeepFaceError as exc:
+                _LOGGER.error("Ошибка добавления фото для «%s»: %s", link.person_name, exc)
+                errors += 1
+
+        return web.json_response(
+            self._upload_result(link.person_name, added, no_face, errors)
+        )
+
+    def _upload_result(self, person: str, added: int, no_face: int, errors: int) -> dict:
+        parts = []
+        if added:
+            parts.append(f"добавлено {added}")
+        if no_face:
+            parts.append(f"без лица {no_face}")
+        if errors:
+            parts.append(f"ошибок {errors}")
+        status = "ok" if added else "error"
+        detail = ", ".join(parts) if parts else "нет подходящих файлов"
+        return {
+            "status": status,
+            "message": f"«{person}»: {detail}",
+            "count": self._face_store.photo_count(person),
+        }
 
     async def _handle_action(
         self, link: EnrollLink, request: web.Request
@@ -385,17 +426,17 @@ def _enroll_page(
             '<img class="preview" id="preview" alt="предпросмотр камеры">'
             '<div class="btns">'
             '<button class="act" id="cap">📸 Снять с камеры</button>'
-            '<label class="upload">⬆️ Загрузить фото<input type="file" id="file" accept="image/*"></label>'
+            '<label class="upload">⬆️ Загрузить фото<input type="file" id="file" accept="image/*" multiple></label>'
             "</div>"
         )
-        hint = "Наведите камеру на лицо и нажмите «Снять», либо загрузите фото."
+        hint = "Наведите камеру на лицо и нажмите «Снять», либо загрузите одно/несколько фото."
     else:
         camera_block = (
             '<div class="btns">'
-            '<label class="upload wide">⬆️ Загрузить фото<input type="file" id="file" accept="image/*"></label>'
+            '<label class="upload wide">⬆️ Загрузить фото<input type="file" id="file" accept="image/*" multiple></label>'
             "</div>"
         )
-        hint = "Загрузите фото лица (анфас, хорошее освещение)."
+        hint = "Загрузите одно или несколько фото лица (анфас, хорошее освещение)."
 
     return f"""<!doctype html>
 <html lang="ru"><head><meta charset="utf-8">
@@ -504,14 +545,16 @@ def _enroll_page(
     cap.disabled = false;
   }}
 
-  async function upload(f) {{
-    setStatus('Загружаю и распознаю…', true);
-    const fd = new FormData(); fd.append('photo', f);
+  async function upload(files) {{
+    if (!files || !files.length) return;
+    setStatus('Загружаю ' + files.length + ' фото…', true);
+    const fd = new FormData();
+    for (const f of files) fd.append('photo', f);
     try {{
       const r = await fetch(base, {{ method:'POST', body: fd }});
       const d = await r.json();
       setStatus(d.message, d.status === 'ok');
-      if (d.status === 'ok') await refresh();
+      await refresh();
     }} catch (e) {{ setStatus('Ошибка загрузки.', false); }}
   }}
 
@@ -524,7 +567,7 @@ def _enroll_page(
   }}
 
   if (cap) cap.addEventListener('click', capture);
-  file.addEventListener('change', e => {{ if (e.target.files[0]) upload(e.target.files[0]); }});
+  file.addEventListener('change', e => {{ if (e.target.files.length) upload(e.target.files); e.target.value=''; }});
   grid.addEventListener('click', e => {{
     if (e.target.classList.contains('del')) {{
       const thumb = e.target.closest('.thumb');
