@@ -23,6 +23,66 @@
       "invalid_code": "Invalid SMS code. Please try again."
     }
   },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Face recognition",
+        "menu_options": {
+          "settings": "Service settings",
+          "people": "People",
+          "cameras": "Cameras and locks"
+        }
+      },
+      "settings": {
+        "title": "Recognition service (DeepFace)",
+        "description": "Set the DeepFace service address and recognition parameters.",
+        "data": {
+          "deepface_url": "DeepFace service URL",
+          "model": "Recognition model",
+          "threshold": "Similarity threshold (lower is stricter)",
+          "interval": "Polling interval (sec)",
+          "cooldown": "Pause after unlock (sec)",
+          "anti_spoofing": "Anti-spoofing"
+        }
+      },
+      "people": {
+        "title": "People",
+        "menu_options": {
+          "add_person": "Add person",
+          "remove_person": "Remove person"
+        }
+      },
+      "add_person": {
+        "title": "Add person",
+        "description": "Enter a name and upload a face photo (frontal, good lighting).",
+        "data": {
+          "name": "Name",
+          "photo": "Face photo"
+        }
+      },
+      "remove_person": {
+        "title": "Remove person",
+        "data": {
+          "name": "Person"
+        }
+      },
+      "cameras": {
+        "title": "Cameras and locks",
+        "description": "For each camera choose the lock to open on recognition. Leave empty to disable auto-unlock for that camera."
+      }
+    },
+    "error": {
+      "deepface_unreachable": "DeepFace service is not reachable at the given address.",
+      "no_face": "No face found in the photo. Try another photo.",
+      "spoof_on_photo": "The photo was detected as a spoof. Upload a normal face photo.",
+      "empty_name": "Please enter a name."
+    },
+    "abort": {
+      "configure_deepface_first": "First set the DeepFace service address in 'Service settings'.",
+      "no_people": "No people yet — add a person first.",
+      "no_cameras": "No Rosdomofon cameras found."
+    }
+  },
   "services": {
     "generate_share_link": {
       "name": "Generate guest link",

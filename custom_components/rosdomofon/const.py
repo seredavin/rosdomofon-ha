@@ -36,3 +36,34 @@ CAMERA_DETAILS_URL = f"{BASE_URL}/cameras-service/api/v1/cameras/{{camera_id}}"
 # Ссылки для гостевого доступа (Share Link)
 SHARE_LINK_DEFAULT_TTL_HOURS = 12
 SHARE_LINK_WEBHOOK_PREFIX = "rosdomofon_share_"
+
+# ---------------------------------------------------------------------------
+# Распознавание лиц (авто-открытие двери по лицу через DeepFace)
+# ---------------------------------------------------------------------------
+
+# Ключи опций config entry (options flow)
+CONF_DEEPFACE_URL = "deepface_url"
+CONF_MODEL = "model"
+CONF_THRESHOLD = "threshold"
+CONF_INTERVAL = "interval"
+CONF_COOLDOWN = "cooldown"
+CONF_ANTISPOOF = "anti_spoofing"
+CONF_CAMERAS = "cameras"  # dict: camera_id -> {"enabled": bool, "lock": entity_id}
+
+# Значения по умолчанию
+DEFAULT_MODEL = "Facenet512"
+DEFAULT_DETECTOR = "retinaface"
+# Порог косинусного расстояния: чем меньше — тем строже. 0.30 — базовый для
+# Facenet512; для двери берём строгое значение по умолчанию.
+DEFAULT_THRESHOLD = 0.28
+DEFAULT_INTERVAL = 3  # секунды между кадрами
+DEFAULT_COOLDOWN = 30  # секунды тишины после открытия
+DEFAULT_ANTISPOOF = True
+
+# Хранилище эталонных лиц (эмбеддинги)
+FACE_STORE_KEY = f"{DOMAIN}_faces"
+FACE_STORE_VERSION = 1
+
+# Данные распознавания в hass.data[DOMAIN]
+DATA_FACE_STORE = "_face_store"
+DATA_FACE_COORDINATOR = "_face_coordinator"

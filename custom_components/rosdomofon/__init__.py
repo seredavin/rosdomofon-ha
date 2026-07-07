@@ -13,14 +13,16 @@ import voluptuous as vol
 from homeassistant.components import persistent_notification
 from homeassistant.helpers import config_validation as cv
 
-from .const import DOMAIN, SHARE_LINK_DEFAULT_TTL_HOURS
+from .const import DATA_FACE_STORE, DOMAIN, SHARE_LINK_DEFAULT_TTL_HOURS
+from .face_store import FaceStore
+from .face_unlock import FaceUnlockCoordinator
 from .share import ExternalURLNotAvailable, ShareLinkManager
 from .stream_proxy import setup_stream_proxy
 from .token_manager import TokenManager
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[str] = ["lock", "button", "camera"]
+PLATFORMS: list[str] = ["lock", "button", "camera", "switch", "sensor"]
 
 # Схема сервиса генерации гостевой ссылки
 SERVICE_GENERATE_LINK = "generate_share_link"
@@ -47,6 +49,17 @@ async def async_setup_entry(hass, entry) -> bool:
         "token_manager": token_manager,
         "share_manager": share_manager,
     }
+
+    # Распознавание лиц (авто-открытие по лицу). Хранилище лиц — одно на домен.
+    face_store = hass.data[DOMAIN].get(DATA_FACE_STORE)
+    if face_store is None:
+        face_store = FaceStore(hass)
+        await face_store.async_load()
+        hass.data[DOMAIN][DATA_FACE_STORE] = face_store
+
+    coordinator = FaceUnlockCoordinator(hass, face_store, dict(entry.options))
+    hass.data[DOMAIN][entry.entry_id]["face_coordinator"] = coordinator
+    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
 
     # Регистрируем прокси для HLS потоков (один раз на домен)
     if "_stream_proxy_registered" not in hass.data[DOMAIN]:
@@ -103,11 +116,23 @@ async def async_setup_entry(hass, entry) -> bool:
         )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # Запускаем опрос камер после создания сущностей.
+    coordinator.start()
     return True
+
+
+async def _async_options_updated(hass, entry) -> None:
+    """Перезагружает интеграцию при изменении настроек распознавания."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(hass, entry) -> bool:
     """Выгрузка интеграции при удалении config entry."""
+    coordinator = hass.data[DOMAIN].get(entry.entry_id, {}).get("face_coordinator")
+    if coordinator:
+        coordinator.stop()
+
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
     if unload_ok:
