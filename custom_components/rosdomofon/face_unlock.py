@@ -18,7 +18,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.util import dt as dt_util
 
-from . import deepface_client
+from . import deepface_client, prefilter
 from .const import (
     CONF_ANTISPOOF,
     CONF_CAMERAS,
@@ -27,12 +27,14 @@ from .const import (
     CONF_DETECTOR,
     CONF_INTERVAL,
     CONF_MODEL,
+    CONF_PREFILTER,
     CONF_THRESHOLD,
     DEFAULT_ANTISPOOF,
     DEFAULT_COOLDOWN,
     DEFAULT_DETECTOR,
     DEFAULT_INTERVAL,
     DEFAULT_MODEL,
+    DEFAULT_PREFILTER,
     DEFAULT_THRESHOLD,
     DOMAIN,
     EVENT_FACE_RECOGNIZED,
@@ -63,6 +65,11 @@ class FaceUnlockCoordinator:
         # Отдельный кулдаун на запись кадров неизвестных лиц, чтобы не засорять ленту
         self._unknown_cooldown_until: dict[str, float] = {}
         self._enabled: dict[str, bool] = {}
+        # Предыдущие уменьшенные кадры для детекции движения (по камере)
+        self._prev_gray: dict = {}
+        # Доступность OpenCV-детектора лиц (fail-open, если opencv не установлен)
+        self._face_detect_available = True
+        self._face_detect_warned = False
         # Один раз предупреждаем, если антиспуфинг недоступен (нет torch)
         self._antispoof_warned = False
         # Последнее распознавание (для sensor)
@@ -89,6 +96,7 @@ class FaceUnlockCoordinator:
         self._cooldown = int(options.get(CONF_COOLDOWN, DEFAULT_COOLDOWN))
         self._anti_spoofing = bool(options.get(CONF_ANTISPOOF, DEFAULT_ANTISPOOF))
         self._detector = options.get(CONF_DETECTOR, DEFAULT_DETECTOR)
+        self._prefilter = bool(options.get(CONF_PREFILTER, DEFAULT_PREFILTER))
         # {camera_entity_id: lock_entity_id}
         self._cameras: dict[str, str] = dict(options.get(CONF_CAMERAS, {}))
         # Сохраняем ранее выставленные переключатели, для новых камер — включено.
@@ -170,6 +178,12 @@ class FaceUnlockCoordinator:
                 _LOGGER.debug("Не удалось получить кадр с %s: %s", camera, exc)
                 return
 
+            # Дешёвый предфильтр: не гоняем DeepFace на пустых/статичных кадрах.
+            if self._prefilter and not await self._passes_prefilter(
+                camera, image.content
+            ):
+                return
+
             try:
                 embeddings = await self._hass.async_add_executor_job(
                     deepface_client.represent,
@@ -215,6 +229,42 @@ class FaceUnlockCoordinator:
             await self._unlock(camera, lock, name, distance, image.content)
         finally:
             self._busy.discard(camera)
+
+    async def _passes_prefilter(self, camera: str, image_bytes: bytes) -> bool:
+        """Лёгкий фильтр перед DeepFace: движение + лицо в кадре.
+
+        Возвращает True, если кадр стоит отправлять в DeepFace. Работает
+        fail-open: при ошибках декодирования или отсутствии OpenCV пропускает
+        кадр дальше, чтобы не потерять реальное лицо.
+        """
+        # 1. Детекция движения — сравниваем с предыдущим кадром камеры.
+        cur_gray = await self._hass.async_add_executor_job(
+            prefilter.downscale_gray, image_bytes
+        )
+        if cur_gray is not None:
+            prev_gray = self._prev_gray.get(camera)
+            self._prev_gray[camera] = cur_gray
+            if prev_gray is not None and not prefilter.has_motion(
+                prev_gray, cur_gray
+            ):
+                return False
+
+        # 2. Детекция лица (OpenCV Haar). Без OpenCV — только движение.
+        if self._face_detect_available:
+            try:
+                return await self._hass.async_add_executor_job(
+                    prefilter.has_face, image_bytes
+                )
+            except prefilter.FaceDetectUnavailable:
+                if not self._face_detect_warned:
+                    _LOGGER.warning(
+                        "OpenCV недоступен (не установлен opencv-python-headless) — "
+                        "фильтр по лицу отключён, работает только детекция движения."
+                    )
+                    self._face_detect_warned = True
+                self._face_detect_available = False
+
+        return True
 
     @callback
     def _handle_unknown(self, camera: str, image_bytes: bytes) -> None:

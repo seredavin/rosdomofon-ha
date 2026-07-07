@@ -6,13 +6,14 @@ import pytest
 import requests
 from homeassistant.core import HomeAssistant
 
-from custom_components.rosdomofon import deepface_client
+from custom_components.rosdomofon import deepface_client, prefilter
 from custom_components.rosdomofon.face_store import FaceStore, cosine_distance
 from custom_components.rosdomofon.face_unlock import FaceUnlockCoordinator
 from custom_components.rosdomofon.const import (
     CONF_CAMERAS,
     CONF_COOLDOWN,
     CONF_DEEPFACE_URL,
+    CONF_PREFILTER,
     CONF_THRESHOLD,
 )
 
@@ -231,6 +232,105 @@ async def test_coordinator_unknown_cooldown(hass: HomeAssistant):
     # Второй кадр в пределах кулдауна проигнорирован — остаётся первый
     assert coord.last_unknown_image == b"frame1"
     assert len(events) == 1
+
+
+# --- Предфильтр кадров (движение + лицо) --------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_prefilter_blocks_without_face(hass: HomeAssistant):
+    """Нет лица в кадре -> DeepFace не вызывается."""
+    face_store = MagicMock()
+    coord = _coordinator(hass, face_store)
+    represent = MagicMock(return_value=[[1.0, 0.0]])
+
+    image = MagicMock(content=b"frame")
+    with patch("custom_components.rosdomofon.face_unlock.async_get_image", AsyncMock(return_value=image)), \
+         patch("custom_components.rosdomofon.prefilter.downscale_gray", return_value=None), \
+         patch("custom_components.rosdomofon.prefilter.has_face", return_value=False), \
+         patch("custom_components.rosdomofon.deepface_client.represent", represent):
+        await coord._process_camera("camera.podezd", "lock.dver")
+        await hass.async_block_till_done()
+
+    represent.assert_not_called()
+    face_store.match.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_prefilter_blocks_without_motion(hass: HomeAssistant):
+    """Второй одинаковый кадр (нет движения) -> DeepFace не вызывается."""
+    import numpy as np
+
+    face_store = MagicMock()
+    face_store.match.return_value = None
+    coord = _coordinator(hass, face_store)
+    represent = MagicMock(return_value=[[1.0, 0.0]])
+    gray = np.full((120, 160), 100, dtype=np.int16)
+
+    image = MagicMock(content=b"frame")
+    with patch("custom_components.rosdomofon.face_unlock.async_get_image", AsyncMock(return_value=image)), \
+         patch("custom_components.rosdomofon.prefilter.downscale_gray", return_value=gray), \
+         patch("custom_components.rosdomofon.prefilter.has_face", return_value=True), \
+         patch("custom_components.rosdomofon.deepface_client.represent", represent):
+        # Первый кадр: движения не с чем сравнивать -> проходит
+        await coord._process_camera("camera.podezd", "lock.dver")
+        # Второй кадр идентичен -> нет движения -> блок
+        await coord._process_camera("camera.podezd", "lock.dver")
+        await hass.async_block_till_done()
+
+    assert represent.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_prefilter_disabled_calls_deepface(hass: HomeAssistant):
+    """При выключенном предфильтре DeepFace вызывается всегда."""
+    face_store = MagicMock()
+    face_store.match.return_value = None
+    options = {
+        CONF_DEEPFACE_URL: "http://df",
+        CONF_THRESHOLD: 0.3,
+        CONF_COOLDOWN: 30,
+        CONF_PREFILTER: False,
+        CONF_CAMERAS: {"camera.podezd": "lock.dver"},
+    }
+    coord = FaceUnlockCoordinator(hass, face_store, options)
+    represent = MagicMock(return_value=[[1.0, 0.0]])
+    has_face = MagicMock(return_value=False)
+
+    image = MagicMock(content=b"frame")
+    with patch("custom_components.rosdomofon.face_unlock.async_get_image", AsyncMock(return_value=image)), \
+         patch("custom_components.rosdomofon.prefilter.has_face", has_face), \
+         patch("custom_components.rosdomofon.deepface_client.represent", represent):
+        await coord._process_camera("camera.podezd", "lock.dver")
+        await hass.async_block_till_done()
+
+    # Фильтр не вызывался, DeepFace вызван
+    has_face.assert_not_called()
+    represent.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_prefilter_fail_open_without_opencv(hass: HomeAssistant):
+    """Если OpenCV недоступен, фильтр по лицу пропускает кадр (fail-open)."""
+    face_store = MagicMock()
+    face_store.match.return_value = ("Alice", 0.1)
+    coord = _coordinator(hass, face_store)
+    _track_unlock(hass)
+    represent = MagicMock(return_value=[[1.0, 0.0]])
+
+    image = MagicMock(content=b"frame")
+    with patch("custom_components.rosdomofon.face_unlock.async_get_image", AsyncMock(return_value=image)), \
+         patch("custom_components.rosdomofon.prefilter.downscale_gray", return_value=None), \
+         patch("custom_components.rosdomofon.prefilter.has_face", side_effect=prefilter.FaceDetectUnavailable), \
+         patch("custom_components.rosdomofon.deepface_client.represent", represent), \
+         patch("custom_components.rosdomofon.face_unlock.persistent_notification.async_create"):
+        await coord._process_camera("camera.podezd", "lock.dver")
+        await hass.async_block_till_done()
+
+    # Лицо-фильтр отключился, но кадр прошёл дальше и распознан
+    assert coord._face_detect_available is False
+    represent.assert_called_once()
+    assert coord.last_person == "Alice"
 
 
 @pytest.mark.asyncio

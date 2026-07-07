@@ -14,7 +14,8 @@
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/iljyxa/rosdomofon-ha/issues",
   "requirements": [
-    "requests"
+    "requests",
+    "opencv-python-headless==4.10.0.84"
   ],
-  "version": "1.5.0"
+  "version": "1.6.0"
 }

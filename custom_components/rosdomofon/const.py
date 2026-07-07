@@ -49,6 +49,7 @@ CONF_INTERVAL = "interval"
 CONF_COOLDOWN = "cooldown"
 CONF_ANTISPOOF = "anti_spoofing"
 CONF_DETECTOR = "detector"
+CONF_PREFILTER = "prefilter"
 CONF_CAMERAS = "cameras"  # dict: camera_id -> {"enabled": bool, "lock": entity_id}
 
 # Значения по умолчанию
@@ -62,6 +63,9 @@ DEFAULT_THRESHOLD = 0.28
 DEFAULT_INTERVAL = 3  # секунды между кадрами
 DEFAULT_COOLDOWN = 30  # секунды тишины после открытия
 DEFAULT_ANTISPOOF = True
+# Предварительный фильтр кадров (движение + лицо) перед вызовом DeepFace,
+# чтобы не нагружать сервис пустыми кадрами.
+DEFAULT_PREFILTER = True
 
 # Хранилище эталонных лиц (эмбеддинги)
 FACE_STORE_KEY = f"{DOMAIN}_faces"

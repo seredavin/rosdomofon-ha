@@ -27,6 +27,7 @@ from .const import (
     CONF_DETECTOR,
     CONF_INTERVAL,
     CONF_MODEL,
+    CONF_PREFILTER,
     CONF_THRESHOLD,
     DATA_FACE_STORE,
     DEFAULT_ANTISPOOF,
@@ -34,6 +35,7 @@ from .const import (
     DEFAULT_DETECTOR,
     DEFAULT_INTERVAL,
     DEFAULT_MODEL,
+    DEFAULT_PREFILTER,
     DEFAULT_THRESHOLD,
     DOMAIN,
     GRANT_TYPE_MOBILE,
@@ -279,6 +281,10 @@ class RosdomofonOptionsFlow(config_entries.OptionsFlow):
             vol.Optional(
                 CONF_ANTISPOOF,
                 default=opts.get(CONF_ANTISPOOF, DEFAULT_ANTISPOOF),
+            ): bool,
+            vol.Optional(
+                CONF_PREFILTER,
+                default=opts.get(CONF_PREFILTER, DEFAULT_PREFILTER),
             ): bool,
         })
         return self.async_show_form(
