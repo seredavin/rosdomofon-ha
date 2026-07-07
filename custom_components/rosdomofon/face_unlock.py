@@ -56,6 +56,8 @@ class FaceUnlockCoordinator:
         self._busy: set[str] = set()
         self._cooldown_until: dict[str, float] = {}
         self._enabled: dict[str, bool] = {}
+        # Один раз предупреждаем, если антиспуфинг недоступен (нет torch)
+        self._antispoof_warned = False
         # Последнее распознавание (для sensor)
         self.last_person: str | None = None
 
@@ -160,6 +162,17 @@ class FaceUnlockCoordinator:
                     self._detector,
                     self._anti_spoofing,
                 )
+            except deepface_client.AntiSpoofUnavailable:
+                # В образе DeepFace нет torch — продолжаем без антиспуфинга.
+                if not self._antispoof_warned:
+                    _LOGGER.warning(
+                        "Антиспуфинг недоступен в DeepFace (не установлен torch). "
+                        "Продолжаю распознавание без проверки на подделку. "
+                        "Установите torch в сервисе, чтобы включить защиту от фото/экрана."
+                    )
+                    self._antispoof_warned = True
+                self._anti_spoofing = False
+                return
             except deepface_client.SpoofDetected:
                 _LOGGER.warning("%s: обнаружена подделка (фото/экран), пропуск", camera)
                 return

@@ -29,6 +29,10 @@ class NoFaceError(DeepFaceError):
     """На изображении не найдено лицо."""
 
 
+class AntiSpoofUnavailable(DeepFaceError):
+    """Антиспуфинг недоступен в сервисе (в образе DeepFace не установлен torch)."""
+
+
 def _image_to_data_uri(image: bytes) -> str:
     """Преобразует байты изображения в data URI (DeepFace ждёт такой формат)."""
     b64 = base64.b64encode(image).decode("ascii")
@@ -78,8 +82,12 @@ def represent(
     # Ненулевой статус — разбираем сообщение об ошибке.
     message = _error_message(response)
     lowered = message.lower()
-    if "spoof" in lowered:
+    # Именно обнаружение подделки ("Spoof detected in the given image."),
+    # а не любые упоминания слова spoofing (например, ошибка про отсутствие torch).
+    if "spoof detected" in lowered:
         raise SpoofDetected(message)
+    if "install torch" in lowered or "anti spoofing" in lowered:
+        raise AntiSpoofUnavailable(message)
     if "could not be detected" in lowered or "face could not" in lowered:
         # Лицо не найдено — не ошибка для нашего сценария.
         return []

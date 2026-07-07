@@ -151,6 +151,24 @@ async def test_coordinator_spoof_does_not_unlock(hass: HomeAssistant):
 
 
 @pytest.mark.asyncio
+async def test_coordinator_antispoof_unavailable_falls_back(hass: HomeAssistant):
+    face_store = MagicMock()
+    coord = _coordinator(hass, face_store)
+    calls = _track_unlock(hass)
+    assert coord._anti_spoofing is True
+
+    image = MagicMock(content=b"frame")
+    with patch("custom_components.rosdomofon.face_unlock.async_get_image", AsyncMock(return_value=image)), \
+         patch("custom_components.rosdomofon.deepface_client.represent", side_effect=deepface_client.AntiSpoofUnavailable()):
+        await coord._process_camera("camera.podezd", "lock.dver")
+        await hass.async_block_till_done()
+
+    # Кадр пропущен, но антиспуфинг отключён для последующих опросов
+    assert len(calls) == 0
+    assert coord._anti_spoofing is False
+
+
+@pytest.mark.asyncio
 async def test_coordinator_no_match_does_not_unlock(hass: HomeAssistant):
     face_store = MagicMock()
     face_store.match.return_value = None
