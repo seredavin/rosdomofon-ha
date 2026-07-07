@@ -295,24 +295,13 @@ class RosdomofonOptionsFlow(config_entries.OptionsFlow):
             step_id="settings", data_schema=schema, errors=errors
         )
 
-    # --- Люди (галерея) ---
+    # --- Люди (галерея встроена в боковую панель) ---
 
     async def async_step_people(self, user_input=None):
-        """Показывает ссылку на галерею лиц (добавление, просмотр, удаление фото)."""
-        from .faces_view import faces_gallery_url
-
+        """Подсказка: управление лицами — в боковой панели «Лица (Росдомофон)»."""
         if user_input is not None:
             return await self.async_step_init()
-
-        url = faces_gallery_url(self.hass)
-        if not url:
-            return self.async_abort(reason="no_gallery_url")
-
-        return self.async_show_form(
-            step_id="people",
-            data_schema=vol.Schema({}),
-            description_placeholders={"url": url},
-        )
+        return self.async_show_form(step_id="people", data_schema=vol.Schema({}))
 
     # --- Привязка камер к замкам ---
 

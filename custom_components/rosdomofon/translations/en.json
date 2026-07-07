@@ -49,8 +49,8 @@
         }
       },
       "people": {
-        "title": "People — face gallery",
-        "description": "Open the face gallery page — there you can add photos (by upload), view thumbnails and delete individual photos or a whole person:\n\n{url}\n\nPress 'Submit' to go back."
+        "title": "People — face management",
+        "description": "Face management is built into the Home Assistant **sidebar** — the **'Лица (Росдомофон)'** item in the left menu. There you can add photos (by upload), view thumbnails and delete individual photos or a whole person.\n\nPress 'Submit' to go back."
       },
       "cameras": {
         "title": "Cameras and locks",
@@ -61,8 +61,7 @@
       "deepface_unreachable": "DeepFace service is not reachable at the given address."
     },
     "abort": {
-      "no_cameras": "No Rosdomofon cameras found.",
-      "no_gallery_url": "Could not build the gallery link: no internal/external URL is configured in Home Assistant."
+      "no_cameras": "No Rosdomofon cameras found."
     }
   },
   "services": {

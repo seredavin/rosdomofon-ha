@@ -28,7 +28,11 @@ from .const import (
 )
 from .debug_view import debug_gallery_url, setup_debug_view
 from .enroll import EnrollLinkManager
-from .faces_view import setup_faces_view
+from .faces_view import (
+    async_register_faces_panel,
+    async_remove_faces_panel,
+    setup_faces_view,
+)
 from .face_store import FaceStore
 from .face_unlock import FaceUnlockCoordinator
 from .share import ExternalURLNotAvailable, ShareLinkManager
@@ -110,6 +114,8 @@ async def async_setup_entry(hass, entry) -> bool:
     if "_faces_registered" not in hass.data[DOMAIN]:
         setup_faces_view(hass)
         hass.data[DOMAIN]["_faces_registered"] = True
+    # Боковую панель регистрируем/обновляем при каждом старте (свежая подпись URL)
+    async_register_faces_panel(hass)
 
     # При включённой отладке показываем ссылку на галерею кадров.
     if entry.options.get(CONF_DEBUG, DEFAULT_DEBUG):
@@ -257,12 +263,14 @@ async def async_unload_entry(hass, entry) -> bool:
         if enroll_manager:
             enroll_manager.revoke_all()
 
-        # Если больше нет активных entry, удаляем сервисы
+        # Если больше нет активных entry, удаляем сервисы и панель
         if not any(
             isinstance(v, dict) and "token_manager" in v
             for v in hass.data.get(DOMAIN, {}).values()
         ):
             hass.services.async_remove(DOMAIN, SERVICE_GENERATE_LINK)
             hass.services.async_remove(DOMAIN, SERVICE_GENERATE_ENROLL)
+            async_remove_faces_panel(hass)
+            hass.data[DOMAIN].pop("_faces_registered", None)
 
     return unload_ok

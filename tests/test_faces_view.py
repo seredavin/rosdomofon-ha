@@ -47,6 +47,23 @@ def _signed_request(hass, method="GET", body=None):
 
 
 @pytest.mark.asyncio
+async def test_register_faces_panel(hass: HomeAssistant):
+    from custom_components.rosdomofon import faces_view
+
+    with patch("homeassistant.components.frontend.async_register_built_in_panel") as reg, \
+         patch("homeassistant.components.frontend.async_remove_panel"):
+        faces_view.async_register_faces_panel(hass)
+
+    assert reg.called
+    kwargs = reg.call_args.kwargs
+    assert kwargs["component_name"] == "iframe"
+    assert kwargs["frontend_url_path"] == faces_view.FACES_PANEL_URL_PATH
+    assert kwargs["require_admin"] is True
+    assert "/api/rosdomofon/faces" in kwargs["config"]["url"]
+    assert "sig=" in kwargs["config"]["url"]
+
+
+@pytest.mark.asyncio
 async def test_faces_get_rejects_without_signature(hass: HomeAssistant):
     view = RosdomofonFacesView(hass)
     request = MagicMock(path="/api/rosdomofon/faces", query={})

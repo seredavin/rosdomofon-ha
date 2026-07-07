@@ -13,7 +13,6 @@ import logging
 from aiohttp import web
 from homeassistant.components.http import HomeAssistantView
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.network import get_url
 
 from . import deepface_client
 from .const import (
@@ -31,17 +30,40 @@ _LOGGER = logging.getLogger(__name__)
 
 _FACES_PATH = "/api/rosdomofon/faces"
 
+# Путь боковой панели HA, в которую встроена галерея лиц
+FACES_PANEL_URL_PATH = "rosdomofon-faces"
 
-def faces_gallery_url(hass: HomeAssistant) -> str | None:
-    """Строит абсолютную подписанную ссылку на галерею лиц (или None)."""
+
+def async_register_faces_panel(hass: HomeAssistant) -> None:
+    """Регистрирует (обновляя) боковую панель HA со страницей управления лицами.
+
+    Панель — iframe того же origin с подписанным путём, поэтому открывается прямо
+    в интерфейсе Home Assistant, а не отдельной ссылкой. Только для админов.
+    """
+    from homeassistant.components import frontend
+
+    async_remove_faces_panel(hass)
+    signed_path = sign_proxy_path(hass, _FACES_PATH)  # относительный путь с подписью
+    frontend.async_register_built_in_panel(
+        hass,
+        component_name="iframe",
+        sidebar_title="Лица (Росдомофон)",
+        sidebar_icon="mdi:face-recognition",
+        frontend_url_path=FACES_PANEL_URL_PATH,
+        config={"url": signed_path},
+        require_admin=True,
+    )
+    _LOGGER.info("Боковая панель управления лицами зарегистрирована")
+
+
+def async_remove_faces_panel(hass: HomeAssistant) -> None:
+    """Убирает боковую панель (если была)."""
+    from homeassistant.components import frontend
+
     try:
-        base_url = get_url(hass, prefer_external=False)
-    except Exception:  # noqa: BLE001
-        try:
-            base_url = get_url(hass)
-        except Exception:  # noqa: BLE001
-            return None
-    return f"{base_url}{sign_proxy_path(hass, _FACES_PATH)}"
+        frontend.async_remove_panel(hass, FACES_PANEL_URL_PATH)
+    except Exception:  # noqa: BLE001 — панели могло не быть
+        pass
 
 
 def _face_store(hass: HomeAssistant):
