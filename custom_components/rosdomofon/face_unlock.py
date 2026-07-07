@@ -26,11 +26,13 @@ from .const import (
     CONF_DEEPFACE_URL,
     CONF_DETECTOR,
     CONF_INTERVAL,
+    CONF_DEBUG,
     CONF_MODEL,
     CONF_PREFILTER,
     CONF_THRESHOLD,
     DEFAULT_ANTISPOOF,
     DEFAULT_COOLDOWN,
+    DEFAULT_DEBUG,
     DEFAULT_DETECTOR,
     DEFAULT_INTERVAL,
     DEFAULT_MODEL,
@@ -40,6 +42,7 @@ from .const import (
     EVENT_FACE_RECOGNIZED,
     EVENT_FACE_UNKNOWN,
 )
+from .debug_view import get_debug_log
 from .face_store import FaceStore
 
 _LOGGER = logging.getLogger(__name__)
@@ -97,6 +100,7 @@ class FaceUnlockCoordinator:
         self._anti_spoofing = bool(options.get(CONF_ANTISPOOF, DEFAULT_ANTISPOOF))
         self._detector = options.get(CONF_DETECTOR, DEFAULT_DETECTOR)
         self._prefilter = bool(options.get(CONF_PREFILTER, DEFAULT_PREFILTER))
+        self._debug = bool(options.get(CONF_DEBUG, DEFAULT_DEBUG))
         # {camera_entity_id: lock_entity_id}
         self._cameras: dict[str, str] = dict(options.get(CONF_CAMERAS, {}))
         # Сохраняем ранее выставленные переключатели, для новых камер — включено.
@@ -184,6 +188,7 @@ class FaceUnlockCoordinator:
             ):
                 return
 
+            sent_at = self._hass.loop.time()
             try:
                 embeddings = await self._hass.async_add_executor_job(
                     deepface_client.represent,
@@ -195,6 +200,9 @@ class FaceUnlockCoordinator:
                 )
             except deepface_client.AntiSpoofUnavailable:
                 # В образе DeepFace нет torch — продолжаем без антиспуфинга.
+                self._record_debug(
+                    camera, image.content, "антиспуфинг недоступен (нет torch)", sent_at
+                )
                 if not self._antispoof_warned:
                     _LOGGER.warning(
                         "Антиспуфинг недоступен в DeepFace (не установлен torch). "
@@ -205,14 +213,21 @@ class FaceUnlockCoordinator:
                 self._anti_spoofing = False
                 return
             except deepface_client.SpoofDetected:
+                self._record_debug(
+                    camera, image.content, "подделка (spoof)", sent_at
+                )
                 _LOGGER.warning("%s: обнаружена подделка (фото/экран), пропуск", camera)
                 return
             except deepface_client.DeepFaceError as exc:
+                self._record_debug(
+                    camera, image.content, f"ошибка DeepFace: {exc}", sent_at
+                )
                 _LOGGER.debug("%s: ошибка DeepFace: %s", camera, exc)
                 return
 
             # Лицо на кадре не найдено — в ленту ничего не пишем.
             if not embeddings:
+                self._record_debug(camera, image.content, "лицо не найдено (0)", sent_at)
                 return
 
             match = None
@@ -220,6 +235,10 @@ class FaceUnlockCoordinator:
                 candidate = self._face_store.match(embedding, self._threshold)
                 if candidate and (match is None or candidate[1] < match[1]):
                     match = candidate
+
+            self._record_debug(
+                camera, image.content, self._match_summary(embeddings, match), sent_at
+            )
 
             if match is None:
                 self._handle_unknown(camera, image.content)
@@ -265,6 +284,39 @@ class FaceUnlockCoordinator:
                 self._face_detect_available = False
 
         return True
+
+    def _match_summary(self, embeddings: list, match) -> str:
+        """Текстовый результат распознавания для отладочной галереи."""
+        if not self._debug:
+            return ""
+        parts = [f"{len(embeddings)} лиц"]
+        if match is not None:
+            parts.append(
+                f"→ {match[0]} d={match[1]:.3f} (порог {self._threshold})"
+            )
+        else:
+            nearest = self._face_store.nearest(embeddings)
+            if nearest is not None:
+                parts.append(
+                    f"→ нет совпадения, ближайший {nearest[0]} "
+                    f"d={nearest[1]:.3f} (порог {self._threshold})"
+                )
+            else:
+                parts.append("→ эталонов нет")
+        return ", ".join(parts)
+
+    def _record_debug(
+        self, camera: str, image_bytes: bytes, summary: str, sent_at: float
+    ) -> None:
+        """Пишет кадр и результат в отладочную галерею (если отладка включена)."""
+        if not self._debug:
+            return
+        debug_log = get_debug_log(self._hass)
+        if debug_log is None:
+            return
+        elapsed_ms = int((self._hass.loop.time() - sent_at) * 1000)
+        when = dt_util.now().strftime("%H:%M:%S")
+        debug_log.add(camera, image_bytes, summary, elapsed_ms, when)
 
     @callback
     def _handle_unknown(self, camera: str, image_bytes: bytes) -> None:

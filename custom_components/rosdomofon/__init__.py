@@ -13,7 +13,14 @@ import voluptuous as vol
 from homeassistant.components import persistent_notification
 from homeassistant.helpers import config_validation as cv
 
-from .const import DATA_FACE_STORE, DOMAIN, SHARE_LINK_DEFAULT_TTL_HOURS
+from .const import (
+    CONF_DEBUG,
+    DATA_FACE_STORE,
+    DEFAULT_DEBUG,
+    DOMAIN,
+    SHARE_LINK_DEFAULT_TTL_HOURS,
+)
+from .debug_view import debug_gallery_url, setup_debug_view
 from .face_store import FaceStore
 from .face_unlock import FaceUnlockCoordinator
 from .share import ExternalURLNotAvailable, ShareLinkManager
@@ -65,6 +72,30 @@ async def async_setup_entry(hass, entry) -> bool:
     if "_stream_proxy_registered" not in hass.data[DOMAIN]:
         setup_stream_proxy(hass)
         hass.data[DOMAIN]["_stream_proxy_registered"] = True
+
+    # Регистрируем отладочную галерею DeepFace (один раз на домен)
+    if "_debug_registered" not in hass.data[DOMAIN]:
+        setup_debug_view(hass)
+        hass.data[DOMAIN]["_debug_registered"] = True
+
+    # При включённой отладке показываем ссылку на галерею кадров.
+    if entry.options.get(CONF_DEBUG, DEFAULT_DEBUG):
+        url = debug_gallery_url(hass)
+        if url:
+            persistent_notification.async_create(
+                hass,
+                f"Отладка распознавания включена.\n\n"
+                f"Галерея кадров, отправленных в DeepFace:\n\n{url}",
+                title="Росдомофон: отладка распознавания 🐞",
+                notification_id="rosdomofon_face_debug",
+            )
+        else:
+            _LOGGER.warning(
+                "Отладка включена, но не удалось построить ссылку на галерею "
+                "(не настроен внутренний/внешний URL Home Assistant)."
+            )
+    else:
+        persistent_notification.async_dismiss(hass, "rosdomofon_face_debug")
 
     # Регистрируем сервис генерации ссылки (один раз на домен)
     if not hass.services.has_service(DOMAIN, SERVICE_GENERATE_LINK):

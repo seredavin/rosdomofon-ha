@@ -50,6 +50,7 @@ CONF_COOLDOWN = "cooldown"
 CONF_ANTISPOOF = "anti_spoofing"
 CONF_DETECTOR = "detector"
 CONF_PREFILTER = "prefilter"
+CONF_DEBUG = "debug"
 CONF_CAMERAS = "cameras"  # dict: camera_id -> {"enabled": bool, "lock": entity_id}
 
 # Значения по умолчанию
@@ -66,6 +67,10 @@ DEFAULT_ANTISPOOF = True
 # Предварительный фильтр кадров (движение + лицо) перед вызовом DeepFace,
 # чтобы не нагружать сервис пустыми кадрами.
 DEFAULT_PREFILTER = True
+# Отладка: сбор кадров, отправленных в DeepFace, с результатом (галерея).
+DEFAULT_DEBUG = False
+# Сколько последних отправленных кадров держать в отладочной галерее.
+DEBUG_LOG_MAXLEN = 25
 
 # Хранилище эталонных лиц (эмбеддинги)
 FACE_STORE_KEY = f"{DOMAIN}_faces"

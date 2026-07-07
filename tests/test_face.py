@@ -12,10 +12,13 @@ from custom_components.rosdomofon.face_unlock import FaceUnlockCoordinator
 from custom_components.rosdomofon.const import (
     CONF_CAMERAS,
     CONF_COOLDOWN,
+    CONF_DEBUG,
     CONF_DEEPFACE_URL,
     CONF_PREFILTER,
     CONF_THRESHOLD,
+    DOMAIN,
 )
+from custom_components.rosdomofon.debug_view import DATA_DEBUG_LOG, DebugLog
 
 
 def _response(status, payload):
@@ -331,6 +334,104 @@ async def test_prefilter_fail_open_without_opencv(hass: HomeAssistant):
     assert coord._face_detect_available is False
     represent.assert_called_once()
     assert coord.last_person == "Alice"
+
+
+# --- FaceStore.nearest --------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_face_store_nearest_ignores_threshold(hass: HomeAssistant):
+    store = FaceStore(hass)
+    await store.async_load()
+    with patch(
+        "custom_components.rosdomofon.deepface_client.represent",
+        return_value=[[1.0, 0.0, 0.0]],
+    ):
+        await store.async_add_person("Alice", b"img", "http://df", "Facenet512", "opencv")
+
+    # Далёкий эмбеддинг: match вернёт None, а nearest — Alice с расстоянием
+    assert store.match([0.0, 1.0, 0.0], threshold=0.3) is None
+    nearest = store.nearest([[0.0, 1.0, 0.0]])
+    assert nearest is not None and nearest[0] == "Alice"
+    assert nearest[1] == pytest.approx(1.0)
+
+    # Нет лиц на кадре -> None
+    assert store.nearest([]) is None
+
+
+# --- Отладочная запись координатором ------------------------------------------
+
+
+def _debug_coordinator(hass, face_store):
+    options = {
+        CONF_DEEPFACE_URL: "http://df",
+        CONF_THRESHOLD: 0.3,
+        CONF_COOLDOWN: 30,
+        CONF_PREFILTER: False,
+        CONF_DEBUG: True,
+        CONF_CAMERAS: {"camera.podezd": "lock.dver"},
+    }
+    return FaceUnlockCoordinator(hass, face_store, options)
+
+
+@pytest.mark.asyncio
+async def test_coordinator_records_debug_on_match(hass: HomeAssistant):
+    face_store = MagicMock()
+    face_store.match.return_value = ("Alice", 0.1)
+    debug_log = DebugLog()
+    hass.data.setdefault(DOMAIN, {})[DATA_DEBUG_LOG] = debug_log
+    coord = _debug_coordinator(hass, face_store)
+    _track_unlock(hass)
+
+    image = MagicMock(content=b"frame")
+    with patch("custom_components.rosdomofon.face_unlock.async_get_image", AsyncMock(return_value=image)), \
+         patch("custom_components.rosdomofon.deepface_client.represent", return_value=[[1.0, 0.0]]), \
+         patch("custom_components.rosdomofon.face_unlock.persistent_notification.async_create"):
+        await coord._process_camera("camera.podezd", "lock.dver")
+        await hass.async_block_till_done()
+
+    entries = debug_log.entries()
+    assert len(entries) == 1
+    assert entries[0]["image"] == b"frame"
+    assert "Alice" in entries[0]["summary"]
+
+
+@pytest.mark.asyncio
+async def test_coordinator_records_debug_on_spoof(hass: HomeAssistant):
+    face_store = MagicMock()
+    debug_log = DebugLog()
+    hass.data.setdefault(DOMAIN, {})[DATA_DEBUG_LOG] = debug_log
+    coord = _debug_coordinator(hass, face_store)
+
+    image = MagicMock(content=b"frame")
+    with patch("custom_components.rosdomofon.face_unlock.async_get_image", AsyncMock(return_value=image)), \
+         patch("custom_components.rosdomofon.deepface_client.represent", side_effect=deepface_client.SpoofDetected()):
+        await coord._process_camera("camera.podezd", "lock.dver")
+        await hass.async_block_till_done()
+
+    entries = debug_log.entries()
+    assert len(entries) == 1
+    assert "spoof" in entries[0]["summary"].lower()
+
+
+@pytest.mark.asyncio
+async def test_coordinator_no_debug_when_disabled(hass: HomeAssistant):
+    """При выключенной отладке в галерею ничего не пишется."""
+    face_store = MagicMock()
+    face_store.match.return_value = None
+    debug_log = DebugLog()
+    hass.data.setdefault(DOMAIN, {})[DATA_DEBUG_LOG] = debug_log
+    coord = _coordinator(hass, face_store)  # CONF_DEBUG не задан -> выкл
+
+    image = MagicMock(content=b"frame")
+    with patch("custom_components.rosdomofon.face_unlock.async_get_image", AsyncMock(return_value=image)), \
+         patch("custom_components.rosdomofon.prefilter.downscale_gray", return_value=None), \
+         patch("custom_components.rosdomofon.prefilter.has_face", return_value=True), \
+         patch("custom_components.rosdomofon.deepface_client.represent", return_value=[[1.0, 0.0]]):
+        await coord._process_camera("camera.podezd", "lock.dver")
+        await hass.async_block_till_done()
+
+    assert debug_log.entries() == []
 
 
 @pytest.mark.asyncio

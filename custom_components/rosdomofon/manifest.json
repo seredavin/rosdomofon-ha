@@ -17,5 +17,5 @@
     "requests",
     "opencv-python-headless==4.10.0.84"
   ],
-  "version": "1.6.0"
+  "version": "1.7.0"
 }

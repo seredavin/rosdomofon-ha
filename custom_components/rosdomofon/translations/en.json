@@ -44,7 +44,8 @@
           "interval": "Polling interval (sec)",
           "cooldown": "Pause after unlock (sec)",
           "anti_spoofing": "Anti-spoofing",
-          "prefilter": "Frame pre-filter (motion + face before DeepFace)"
+          "prefilter": "Frame pre-filter (motion + face before DeepFace)",
+          "debug": "Debug: gallery of frames sent to DeepFace"
         }
       },
       "people": {

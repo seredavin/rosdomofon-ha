@@ -130,3 +130,18 @@ class FaceStore:
         if best_name is None:
             return None
         return best_name, best_distance
+
+    def nearest(self, embeddings: list[list[float]]) -> tuple[str, float] | None:
+        """Ближайший человек по всем лицам без учёта порога (для отладки).
+
+        Возвращает (имя, расстояние) ближайшего эталона либо None, если эталонов
+        нет. В отличие от match() не отсекает по порогу — удобно подбирать порог.
+        """
+        best: tuple[str, float] | None = None
+        for embedding in embeddings:
+            for name, refs in self._data.get("people", {}).items():
+                for ref in refs:
+                    distance = cosine_distance(embedding, ref)
+                    if best is None or distance < best[1]:
+                        best = (name, distance)
+        return best

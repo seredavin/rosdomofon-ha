@@ -23,6 +23,7 @@ from .const import (
     CONF_ANTISPOOF,
     CONF_CAMERAS,
     CONF_COOLDOWN,
+    CONF_DEBUG,
     CONF_DEEPFACE_URL,
     CONF_DETECTOR,
     CONF_INTERVAL,
@@ -32,6 +33,7 @@ from .const import (
     DATA_FACE_STORE,
     DEFAULT_ANTISPOOF,
     DEFAULT_COOLDOWN,
+    DEFAULT_DEBUG,
     DEFAULT_DETECTOR,
     DEFAULT_INTERVAL,
     DEFAULT_MODEL,
@@ -285,6 +287,10 @@ class RosdomofonOptionsFlow(config_entries.OptionsFlow):
             vol.Optional(
                 CONF_PREFILTER,
                 default=opts.get(CONF_PREFILTER, DEFAULT_PREFILTER),
+            ): bool,
+            vol.Optional(
+                CONF_DEBUG,
+                default=opts.get(CONF_DEBUG, DEFAULT_DEBUG),
             ): bool,
         })
         return self.async_show_form(
