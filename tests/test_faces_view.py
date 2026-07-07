@@ -1,12 +1,20 @@
 """Тесты страницы просмотра и управления эталонными лицами."""
 
+import io
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.core import HomeAssistant
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.rosdomofon.const import DATA_FACE_STORE, DOMAIN
+from custom_components.rosdomofon.const import (
+    CONF_DEEPFACE_URL,
+    CONF_DETECTOR,
+    CONF_MODEL,
+    DATA_FACE_STORE,
+    DOMAIN,
+)
 from custom_components.rosdomofon.face_store import FaceStore
 from custom_components.rosdomofon.faces_view import RosdomofonFacesView
 from custom_components.rosdomofon.stream_proxy import sign_proxy_path
@@ -29,7 +37,9 @@ async def _store_with_people(hass) -> FaceStore:
 def _signed_request(hass, method="GET", body=None):
     signed = sign_proxy_path(hass, "/api/rosdomofon/faces")
     sig = signed.split("sig=", 1)[1]
-    request = MagicMock(path="/api/rosdomofon/faces", query={"sig": sig})
+    request = MagicMock(
+        path="/api/rosdomofon/faces", query={"sig": sig}, content_type="application/json"
+    )
     request.get.return_value = False
     if body is not None:
         request.json = AsyncMock(return_value=body)
@@ -92,3 +102,75 @@ async def test_faces_post_rejects_without_signature(hass: HomeAssistant):
     request.json = AsyncMock(return_value={"action": "list"})
     resp = await view.post(request)
     assert resp.status == 401
+
+
+def _multipart_request(hass, form):
+    signed = sign_proxy_path(hass, "/api/rosdomofon/faces")
+    sig = signed.split("sig=", 1)[1]
+    req = MagicMock(
+        path="/api/rosdomofon/faces",
+        query={"sig": sig},
+        content_type="multipart/form-data",
+    )
+    req.get.return_value = False
+    req.post = AsyncMock(return_value=form)
+    return req
+
+
+def _with_deepface_entry(hass):
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        options={CONF_DEEPFACE_URL: "http://df", CONF_MODEL: "Facenet512", CONF_DETECTOR: "opencv"},
+    )
+    entry.add_to_hass(hass)
+
+
+@pytest.mark.asyncio
+async def test_faces_add_photo(hass: HomeAssistant):
+    store = await _store_with_people(hass)
+    _with_deepface_entry(hass)
+    field = MagicMock()
+    field.file = io.BytesIO(b"img")
+    req = _multipart_request(hass, {"name": "Пётр", "photo": field})
+
+    view = RosdomofonFacesView(hass)
+    with patch(
+        "custom_components.rosdomofon.deepface_client.represent_faces",
+        return_value=[{"embedding": [1.0, 0.0], "facial_area": None, "confidence": 0.9}],
+    ):
+        resp = await view.post(req)
+
+    data = json.loads(resp.body)
+    assert data["status"] == "ok"
+    assert store.photo_count("Пётр") == 1
+
+
+@pytest.mark.asyncio
+async def test_faces_add_photo_no_face(hass: HomeAssistant):
+    store = await _store_with_people(hass)
+    _with_deepface_entry(hass)
+    field = MagicMock()
+    field.file = io.BytesIO(b"img")
+    req = _multipart_request(hass, {"name": "Пётр", "photo": field})
+
+    view = RosdomofonFacesView(hass)
+    with patch("custom_components.rosdomofon.deepface_client.represent_faces", return_value=[]):
+        resp = await view.post(req)
+
+    data = json.loads(resp.body)
+    assert data["status"] == "error"
+    assert "Пётр" not in store.people
+
+
+@pytest.mark.asyncio
+async def test_faces_add_photo_requires_name(hass: HomeAssistant):
+    await _store_with_people(hass)
+    _with_deepface_entry(hass)
+    field = MagicMock()
+    field.file = io.BytesIO(b"img")
+    req = _multipart_request(hass, {"name": "  ", "photo": field})
+
+    view = RosdomofonFacesView(hass)
+    resp = await view.post(req)
+    data = json.loads(resp.body)
+    assert data["status"] == "error"
