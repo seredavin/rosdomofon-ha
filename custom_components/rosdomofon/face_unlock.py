@@ -276,9 +276,11 @@ class FaceUnlockCoordinator:
                 )
             except prefilter.FaceDetectUnavailable:
                 if not self._face_detect_warned:
-                    _LOGGER.warning(
-                        "OpenCV недоступен (не установлен opencv-python-headless) — "
-                        "фильтр по лицу отключён, работает только детекция движения."
+                    _LOGGER.info(
+                        "Локальный детектор лиц OpenCV недоступен — это нормально "
+                        "(в свежих сборках Home Assistant opencv не ставится). "
+                        "Проверка на лицо выполняется на стороне DeepFace, "
+                        "локальный предфильтр работает по детекции движения."
                     )
                     self._face_detect_warned = True
                 self._face_detect_available = False

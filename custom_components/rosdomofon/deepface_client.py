@@ -45,12 +45,19 @@ def represent(
     model_name: str,
     detector_backend: str,
     anti_spoofing: bool,
+    enforce_detection: bool = True,
 ) -> list[list[float]]:
     """Возвращает эмбеддинги всех лиц на изображении.
 
     При включённом anti_spoofing DeepFace бросает ошибку, если лицо признано
-    подделкой — тогда поднимаем SpoofDetected. Если лицо не найдено, возвращаем
-    пустой список (enforce_detection=false). Прочие сбои — DeepFaceError.
+    подделкой — тогда поднимаем SpoofDetected. Прочие сбои — DeepFaceError.
+
+    enforce_detection=True (по умолчанию): DeepFace сам детектирует лицо своим
+    детектором (opencv/retinaface/…). Если лица нет — возвращаем пустой список
+    (так «проверка на лицо в кадре» выполняется на стороне DeepFace и не тратит
+    эмбеддинг на пустые кадры). Так как opencv в свежих сборках Home Assistant
+    (Python 3.14) не устанавливается, локальный детектор лиц недоступен, и это —
+    основной способ отсеять кадры без лиц.
     """
     url = f"{base_url.rstrip('/')}/represent"
     payload = {
@@ -58,8 +65,7 @@ def represent(
         "model_name": model_name,
         "detector_backend": detector_backend,
         "anti_spoofing": anti_spoofing,
-        # Не падать, если лицо не обнаружено — просто вернуть пусто.
-        "enforce_detection": False,
+        "enforce_detection": enforce_detection,
     }
 
     try:

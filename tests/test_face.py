@@ -50,6 +50,27 @@ def test_represent_no_face_returns_empty():
     assert result == []
 
 
+def test_represent_enforce_detection_default_true():
+    """По умолчанию enforce_detection=True — детекцию лица делает DeepFace."""
+    captured = {}
+
+    def fake_post(url, json=None, timeout=None):
+        captured.update(json)
+        return _response(200, {"results": [{"embedding": [1.0]}]})
+
+    with patch("requests.post", side_effect=fake_post):
+        deepface_client.represent("http://df", b"img", "Facenet512", "opencv", False)
+    assert captured["enforce_detection"] is True
+
+
+def test_represent_no_face_real_message_returns_empty():
+    """Реальное сообщение DeepFace при enforce_detection=True трактуется как «нет лица»."""
+    msg = "Exception while representing: Face could not be detected in base64 encoded string."
+    with patch("requests.post", return_value=_response(400, {"error": msg})):
+        result = deepface_client.represent("http://df", b"img", "Facenet512", "opencv", False)
+    assert result == []
+
+
 def test_represent_other_error_raises():
     with patch("requests.post", return_value=_response(500, {"error": "boom"})):
         with pytest.raises(deepface_client.DeepFaceError):
