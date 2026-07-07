@@ -85,7 +85,7 @@ class FaceStore:
             False,  # anti_spoofing выключен для эталонных фото
         )
         if not embeddings:
-            raise deepface_client.DeepFaceError("На фото не найдено лицо")
+            raise deepface_client.NoFaceError("На фото не найдено лицо")
         if len(embeddings) > 1:
             _LOGGER.warning(
                 "На фото %s найдено несколько лиц, берём первое", name

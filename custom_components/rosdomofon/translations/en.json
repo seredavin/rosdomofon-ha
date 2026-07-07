@@ -39,6 +39,7 @@
         "data": {
           "deepface_url": "DeepFace service URL",
           "model": "Recognition model",
+          "detector": "Face detector (opencv — fast; retinaface — more accurate but heavier)",
           "threshold": "Similarity threshold (lower is stricter)",
           "interval": "Polling interval (sec)",
           "cooldown": "Pause after unlock (sec)",
@@ -74,6 +75,7 @@
     "error": {
       "deepface_unreachable": "DeepFace service is not reachable at the given address.",
       "no_face": "No face found in the photo. Try another photo.",
+      "deepface_error": "DeepFace did not respond in time. On first run it downloads models — wait a couple of minutes and try again.",
       "spoof_on_photo": "The photo was detected as a spoof. Upload a normal face photo.",
       "empty_name": "Please enter a name."
     },

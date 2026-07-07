@@ -48,11 +48,14 @@ CONF_THRESHOLD = "threshold"
 CONF_INTERVAL = "interval"
 CONF_COOLDOWN = "cooldown"
 CONF_ANTISPOOF = "anti_spoofing"
+CONF_DETECTOR = "detector"
 CONF_CAMERAS = "cameras"  # dict: camera_id -> {"enabled": bool, "lock": entity_id}
 
 # Значения по умолчанию
 DEFAULT_MODEL = "Facenet512"
-DEFAULT_DETECTOR = "retinaface"
+# opencv встроен в образ DeepFace и не требует загрузки моделей (в отличие от
+# retinaface/mtcnn) — быстрый и надёжный выбор по умолчанию для домофона.
+DEFAULT_DETECTOR = "opencv"
 # Порог косинусного расстояния: чем меньше — тем строже. 0.30 — базовый для
 # Facenet512; для двери берём строгое значение по умолчанию.
 DEFAULT_THRESHOLD = 0.28

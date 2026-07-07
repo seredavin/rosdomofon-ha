@@ -24,6 +24,7 @@ from .const import (
     CONF_CAMERAS,
     CONF_COOLDOWN,
     CONF_DEEPFACE_URL,
+    CONF_DETECTOR,
     CONF_INTERVAL,
     CONF_MODEL,
     CONF_THRESHOLD,
@@ -247,6 +248,15 @@ class RosdomofonOptionsFlow(config_entries.OptionsFlow):
                 )
             ),
             vol.Optional(
+                CONF_DETECTOR,
+                default=opts.get(CONF_DETECTOR, DEFAULT_DETECTOR),
+            ): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=["opencv", "ssd", "mtcnn", "retinaface"],
+                    mode=selector.SelectSelectorMode.DROPDOWN,
+                )
+            ),
+            vol.Optional(
                 CONF_THRESHOLD,
                 default=opts.get(CONF_THRESHOLD, DEFAULT_THRESHOLD),
             ): selector.NumberSelector(
@@ -308,14 +318,16 @@ class RosdomofonOptionsFlow(config_entries.OptionsFlow):
                         image,
                         opts[CONF_DEEPFACE_URL],
                         opts.get(CONF_MODEL, DEFAULT_MODEL),
-                        DEFAULT_DETECTOR,
+                        opts.get(CONF_DETECTOR, DEFAULT_DETECTOR),
                     )
                     return await self.async_step_people()
                 except deepface_client.SpoofDetected:
                     errors["base"] = "spoof_on_photo"
+                except deepface_client.NoFaceError:
+                    errors["base"] = "no_face"
                 except deepface_client.DeepFaceError as exc:
                     _LOGGER.error("Ошибка добавления лица: %s", exc)
-                    errors["base"] = "no_face"
+                    errors["base"] = "deepface_error"
 
         schema = vol.Schema({
             vol.Required("name"): str,

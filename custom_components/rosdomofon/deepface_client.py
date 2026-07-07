@@ -12,8 +12,9 @@ import requests
 
 _LOGGER = logging.getLogger(__name__)
 
-# Таймаут запроса к DeepFace (инференс на CPU может быть небыстрым)
-_REQUEST_TIMEOUT = 30
+# Таймаут запроса к DeepFace. Первый вызов может скачивать модели (~200 МБ)
+# и грузить их в память, поэтому таймаут щедрый.
+_REQUEST_TIMEOUT = 120
 
 
 class DeepFaceError(Exception):
@@ -22,6 +23,10 @@ class DeepFaceError(Exception):
 
 class SpoofDetected(DeepFaceError):
     """DeepFace определил подделку (фото/экран вместо живого лица)."""
+
+
+class NoFaceError(DeepFaceError):
+    """На изображении не найдено лицо."""
 
 
 def _image_to_data_uri(image: bytes) -> str:

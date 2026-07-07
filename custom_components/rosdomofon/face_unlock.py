@@ -21,6 +21,7 @@ from .const import (
     CONF_CAMERAS,
     CONF_COOLDOWN,
     CONF_DEEPFACE_URL,
+    CONF_DETECTOR,
     CONF_INTERVAL,
     CONF_MODEL,
     CONF_THRESHOLD,
@@ -68,6 +69,7 @@ class FaceUnlockCoordinator:
         self._interval = int(options.get(CONF_INTERVAL, DEFAULT_INTERVAL))
         self._cooldown = int(options.get(CONF_COOLDOWN, DEFAULT_COOLDOWN))
         self._anti_spoofing = bool(options.get(CONF_ANTISPOOF, DEFAULT_ANTISPOOF))
+        self._detector = options.get(CONF_DETECTOR, DEFAULT_DETECTOR)
         # {camera_entity_id: lock_entity_id}
         self._cameras: dict[str, str] = dict(options.get(CONF_CAMERAS, {}))
         # Сохраняем ранее выставленные переключатели, для новых камер — включено.
@@ -155,7 +157,7 @@ class FaceUnlockCoordinator:
                     self._url,
                     image.content,
                     self._model,
-                    DEFAULT_DETECTOR,
+                    self._detector,
                     self._anti_spoofing,
                 )
             except deepface_client.SpoofDetected:
