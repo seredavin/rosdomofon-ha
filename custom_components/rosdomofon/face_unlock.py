@@ -12,7 +12,6 @@ from datetime import timedelta
 from datetime import datetime
 
 from homeassistant.components import persistent_notification
-from homeassistant.components.camera import async_get_image
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_time_interval
@@ -44,6 +43,7 @@ from .const import (
 )
 from .debug_view import get_debug_log
 from .face_store import FaceStore
+from .stream_grabber import StreamGrabber
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -68,6 +68,8 @@ class FaceUnlockCoordinator:
         # Отдельный кулдаун на запись кадров неизвестных лиц, чтобы не засорять ленту
         self._unknown_cooldown_until: dict[str, float] = {}
         self._enabled: dict[str, bool] = {}
+        # Постоянные ffmpeg-читатели потока по камере (свежие кадры для распознавания)
+        self._grabbers: dict[str, StreamGrabber] = {}
         # Предыдущие уменьшенные кадры для детекции движения (по камере)
         self._prev_gray: dict = {}
         # Доступность OpenCV-детектора лиц (fail-open, если opencv не установлен)
@@ -112,31 +114,75 @@ class FaceUnlockCoordinator:
 
     @callback
     def start(self) -> None:
-        """Запускает периодический опрос."""
-        self.stop()
+        """Запускает периодический опрос и постоянные читатели потоков."""
+        self._stop_polling()
         if not self._url or not self._cameras:
             _LOGGER.debug("Авто-открытие по лицу не запущено (нет URL/камер)")
             return
         self._unsub = async_track_time_interval(
             self._hass, self._async_tick, timedelta(seconds=self._interval)
         )
+        self._reconcile_grabbers()
         _LOGGER.info(
             "Авто-открытие по лицу активно для камер: %s",
             ", ".join(self._cameras),
         )
 
     @callback
-    def stop(self) -> None:
-        """Останавливает опрос."""
+    def _stop_polling(self) -> None:
+        """Останавливает только периодический опрос (без читателей потоков)."""
         if self._unsub is not None:
             self._unsub()
             self._unsub = None
+
+    @callback
+    def stop(self) -> None:
+        """Останавливает опрос и планирует остановку читателей потоков."""
+        self._stop_polling()
+        for camera in list(self._grabbers):
+            self._stop_grabber(camera)
+
+    async def async_shutdown(self) -> None:
+        """Полная остановка с ожиданием завершения ffmpeg (для выгрузки entry)."""
+        self._stop_polling()
+        grabbers = list(self._grabbers.values())
+        self._grabbers.clear()
+        for grabber in grabbers:
+            await grabber.async_stop()
 
     @callback
     def update_options(self, options: dict) -> None:
         """Перечитывает настройки и перезапускает опрос."""
         self._apply_options(options)
         self.start()
+
+    # -- Постоянные читатели потоков ------------------------------------
+
+    @callback
+    def _reconcile_grabbers(self) -> None:
+        """Приводит набор читателей потоков в соответствие включённым камерам."""
+        for camera in self._cameras:
+            if self._url and self._enabled.get(camera, False):
+                self._ensure_grabber(camera)
+        for camera in list(self._grabbers):
+            if camera not in self._cameras or not self._enabled.get(camera, False):
+                self._stop_grabber(camera)
+
+    @callback
+    def _ensure_grabber(self, camera: str) -> None:
+        """Создаёт (при необходимости) и запускает читатель потока камеры."""
+        grabber = self._grabbers.get(camera)
+        if grabber is None:
+            grabber = StreamGrabber(self._hass, camera)
+            self._grabbers[camera] = grabber
+        grabber.start()
+
+    @callback
+    def _stop_grabber(self, camera: str) -> None:
+        """Останавливает и убирает читатель потока камеры."""
+        grabber = self._grabbers.pop(camera, None)
+        if grabber is not None:
+            self._hass.async_create_task(grabber.async_stop())
 
     # -- Переключатели камер (используются switch-сущностями) ------------
 
@@ -155,6 +201,11 @@ class FaceUnlockCoordinator:
     @callback
     def set_enabled(self, camera: str, enabled: bool) -> None:
         self._enabled[camera] = enabled
+        # Читатель потока держим только для включённых камер.
+        if enabled and self._url and self._unsub is not None:
+            self._ensure_grabber(camera)
+        elif not enabled:
+            self._stop_grabber(camera)
         async_dispatcher_send(self._hass, SIGNAL_FACE_UPDATE)
 
     # -- Опрос ------------------------------------------------------------
@@ -176,15 +227,17 @@ class FaceUnlockCoordinator:
             if now < self._cooldown_until.get(camera, 0):
                 return
 
-            try:
-                image = await async_get_image(self._hass, camera, timeout=10)
-            except Exception as exc:  # noqa: BLE001 — не спамим при недоступности
-                _LOGGER.debug("Не удалось получить кадр с %s: %s", camera, exc)
+            # Свежий кадр из постоянного читателя потока (не async_get_image:
+            # тот дёргает поток по требованию, из-за чего RDVA гасит поток и
+            # кадры приходят рвано/битые). None — поток ещё не готов или завис.
+            grabber = self._grabbers.get(camera)
+            image_bytes = grabber.latest_frame() if grabber is not None else None
+            if image_bytes is None:
                 return
 
             # Дешёвый предфильтр: не гоняем DeepFace на пустых/статичных кадрах.
             if self._prefilter and not await self._passes_prefilter(
-                camera, image.content
+                camera, image_bytes
             ):
                 return
 
@@ -193,7 +246,7 @@ class FaceUnlockCoordinator:
                 embeddings = await self._hass.async_add_executor_job(
                     deepface_client.represent,
                     self._url,
-                    image.content,
+                    image_bytes,
                     self._model,
                     self._detector,
                     self._anti_spoofing,
@@ -201,7 +254,7 @@ class FaceUnlockCoordinator:
             except deepface_client.AntiSpoofUnavailable:
                 # В образе DeepFace нет torch — продолжаем без антиспуфинга.
                 self._record_debug(
-                    camera, image.content, "антиспуфинг недоступен (нет torch)", sent_at
+                    camera, image_bytes, "антиспуфинг недоступен (нет torch)", sent_at
                 )
                 if not self._antispoof_warned:
                     _LOGGER.warning(
@@ -214,20 +267,20 @@ class FaceUnlockCoordinator:
                 return
             except deepface_client.SpoofDetected:
                 self._record_debug(
-                    camera, image.content, "подделка (spoof)", sent_at
+                    camera, image_bytes, "подделка (spoof)", sent_at
                 )
                 _LOGGER.warning("%s: обнаружена подделка (фото/экран), пропуск", camera)
                 return
             except deepface_client.DeepFaceError as exc:
                 self._record_debug(
-                    camera, image.content, f"ошибка DeepFace: {exc}", sent_at
+                    camera, image_bytes, f"ошибка DeepFace: {exc}", sent_at
                 )
                 _LOGGER.debug("%s: ошибка DeepFace: %s", camera, exc)
                 return
 
             # Лицо на кадре не найдено — в ленту ничего не пишем.
             if not embeddings:
-                self._record_debug(camera, image.content, "лицо не найдено (0)", sent_at)
+                self._record_debug(camera, image_bytes, "лицо не найдено (0)", sent_at)
                 return
 
             match = None
@@ -237,15 +290,15 @@ class FaceUnlockCoordinator:
                     match = candidate
 
             self._record_debug(
-                camera, image.content, self._match_summary(embeddings, match), sent_at
+                camera, image_bytes, self._match_summary(embeddings, match), sent_at
             )
 
             if match is None:
-                self._handle_unknown(camera, image.content)
+                self._handle_unknown(camera, image_bytes)
                 return
 
             name, distance = match
-            await self._unlock(camera, lock, name, distance, image.content)
+            await self._unlock(camera, lock, name, distance, image_bytes)
         finally:
             self._busy.discard(camera)
 

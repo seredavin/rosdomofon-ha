@@ -8,7 +8,8 @@
   "dependencies": [
     "http",
     "logbook",
-    "frontend"
+    "frontend",
+    "ffmpeg"
   ],
   "documentation": "https://github.com/iljyxa/rosdomofon-ha",
   "iot_class": "cloud_polling",
@@ -16,5 +17,5 @@
   "requirements": [
     "requests"
   ],
-  "version": "1.15.1"
+  "version": "1.16.0"
 }

@@ -299,7 +299,7 @@ async def async_unload_entry(hass, entry) -> bool:
     """Выгрузка интеграции при удалении config entry."""
     coordinator = hass.data[DOMAIN].get(entry.entry_id, {}).get("face_coordinator")
     if coordinator:
-        coordinator.stop()
+        await coordinator.async_shutdown()
 
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
