@@ -54,6 +54,10 @@ CONF_COOLDOWN = "cooldown"
 CONF_ANTISPOOF = "anti_spoofing"
 CONF_DETECTOR = "detector"
 CONF_PREFILTER = "prefilter"
+CONF_MIN_FACE_PX = "min_face_px"
+CONF_MIN_SHARPNESS = "min_sharpness"
+CONF_MIN_CONFIDENCE = "min_confidence"
+CONF_AGGREGATE = "aggregate_frames"
 CONF_DEBUG = "debug"
 CONF_CAMERAS = "cameras"  # dict: camera_id -> {"enabled": bool, "lock": entity_id}
 
@@ -72,6 +76,16 @@ DEFAULT_THRESHOLD = 0.28
 DEFAULT_INTERVAL = 3  # секунды между кадрами
 DEFAULT_COOLDOWN = 30  # секунды тишины после открытия
 DEFAULT_ANTISPOOF = True
+# Качество-фильтр кадров (плохая камера даёт мутные/мелкие лица с шумным
+# эмбеддингом). Значение 0 = фильтр выключен. Пороги подбираются по метрикам из
+# отладочной галереи (в подписи каждого кадра выводятся размер, уверенность и
+# резкость лица).
+DEFAULT_MIN_FACE_PX = 0  # минимальная сторона лица в пикселях (0 = выкл)
+DEFAULT_MIN_SHARPNESS = 0.0  # минимальная резкость (дисперсия лапласиана; 0 = выкл)
+DEFAULT_MIN_CONFIDENCE = 0.0  # минимальная уверенность детектора лица (0 = выкл)
+# Агрегация эмбеддинга по нескольким последним качественным кадрам (усреднение
+# снижает шум на плохом видео). 1 = без агрегации.
+DEFAULT_AGGREGATE = 3
 # Предварительный фильтр кадров (движение + лицо) перед вызовом DeepFace,
 # чтобы не нагружать сервис пустыми кадрами.
 DEFAULT_PREFILTER = True

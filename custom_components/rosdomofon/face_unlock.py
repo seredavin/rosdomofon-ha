@@ -7,18 +7,21 @@
 """
 
 import logging
+from collections import deque
 from datetime import timedelta
 
 from datetime import datetime
 
+import numpy as np
 from homeassistant.components import persistent_notification
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.util import dt as dt_util
 
-from . import deepface_client, prefilter
+from . import deepface_client, face_quality, prefilter
 from .const import (
+    CONF_AGGREGATE,
     CONF_ANTISPOOF,
     CONF_CAMERAS,
     CONF_COOLDOWN,
@@ -26,14 +29,21 @@ from .const import (
     CONF_DETECTOR,
     CONF_INTERVAL,
     CONF_DEBUG,
+    CONF_MIN_CONFIDENCE,
+    CONF_MIN_FACE_PX,
+    CONF_MIN_SHARPNESS,
     CONF_MODEL,
     CONF_PREFILTER,
     CONF_THRESHOLD,
+    DEFAULT_AGGREGATE,
     DEFAULT_ANTISPOOF,
     DEFAULT_COOLDOWN,
     DEFAULT_DEBUG,
     DEFAULT_DETECTOR,
     DEFAULT_INTERVAL,
+    DEFAULT_MIN_CONFIDENCE,
+    DEFAULT_MIN_FACE_PX,
+    DEFAULT_MIN_SHARPNESS,
     DEFAULT_MODEL,
     DEFAULT_PREFILTER,
     DEFAULT_THRESHOLD,
@@ -49,6 +59,10 @@ _LOGGER = logging.getLogger(__name__)
 
 # Сигнал обновления состояния для sensor/switch
 SIGNAL_FACE_UPDATE = f"{DOMAIN}_face_update"
+
+# Временнóе окно агрегации эмбеддингов: усредняем только кадры не старше этого,
+# чтобы не смешивать разных людей и старые кадры.
+_AGG_WINDOW_SEC = 3.0
 
 
 class FaceUnlockCoordinator:
@@ -70,6 +84,8 @@ class FaceUnlockCoordinator:
         self._enabled: dict[str, bool] = {}
         # Постоянные ffmpeg-читатели потока по камере (свежие кадры для распознавания)
         self._grabbers: dict[str, StreamGrabber] = {}
+        # Скользящее окно эмбеддингов основного лица по камере (для агрегации)
+        self._embed_window: dict[str, deque] = {}
         # Предыдущие уменьшенные кадры для детекции движения (по камере)
         self._prev_gray: dict = {}
         # Доступность OpenCV-детектора лиц (fail-open, если opencv не установлен)
@@ -102,6 +118,16 @@ class FaceUnlockCoordinator:
         self._anti_spoofing = bool(options.get(CONF_ANTISPOOF, DEFAULT_ANTISPOOF))
         self._detector = options.get(CONF_DETECTOR, DEFAULT_DETECTOR)
         self._prefilter = bool(options.get(CONF_PREFILTER, DEFAULT_PREFILTER))
+        # Качество-фильтр кадров (0 = соответствующая проверка выключена)
+        self._min_face_px = int(options.get(CONF_MIN_FACE_PX, DEFAULT_MIN_FACE_PX))
+        self._min_sharpness = float(
+            options.get(CONF_MIN_SHARPNESS, DEFAULT_MIN_SHARPNESS)
+        )
+        self._min_confidence = float(
+            options.get(CONF_MIN_CONFIDENCE, DEFAULT_MIN_CONFIDENCE)
+        )
+        # Число кадров для усреднения эмбеддинга (1 = без агрегации)
+        self._aggregate_n = max(1, int(options.get(CONF_AGGREGATE, DEFAULT_AGGREGATE)))
         self._debug = bool(options.get(CONF_DEBUG, DEFAULT_DEBUG))
         # {camera_entity_id: lock_entity_id}
         self._cameras: dict[str, str] = dict(options.get(CONF_CAMERAS, {}))
@@ -243,13 +269,14 @@ class FaceUnlockCoordinator:
 
             sent_at = self._hass.loop.time()
             try:
-                embeddings = await self._hass.async_add_executor_job(
-                    deepface_client.represent,
+                faces = await self._hass.async_add_executor_job(
+                    deepface_client.represent_faces,
                     self._url,
                     image_bytes,
                     self._model,
                     self._detector,
                     self._anti_spoofing,
+                    True,
                 )
             except deepface_client.AntiSpoofUnavailable:
                 # В образе DeepFace нет torch — продолжаем без антиспуфинга.
@@ -279,18 +306,35 @@ class FaceUnlockCoordinator:
                 return
 
             # Лицо на кадре не найдено — в ленту ничего не пишем.
-            if not embeddings:
+            if not faces:
+                self._reset_window(camera)
                 self._record_debug(camera, image_bytes, "лицо не найдено (0)", sent_at)
                 return
 
-            match = None
-            for embedding in embeddings:
-                candidate = self._face_store.match(embedding, self._threshold)
-                if candidate and (match is None or candidate[1] < match[1]):
-                    match = candidate
+            # Основное лицо — самое крупное (ближе к камере/двери).
+            primary = max(faces, key=lambda f: _face_area(f.get("facial_area")))
+
+            # Качество-фильтр: не распознаём по мелким/мутным/неуверенным лицам.
+            sharpness, min_side = await self._hass.async_add_executor_job(
+                face_quality.assess, image_bytes, primary.get("facial_area")
+            )
+            reason = self._quality_reason(primary, sharpness, min_side)
+            if reason is not None:
+                self._reset_window(camera)
+                self._record_debug(
+                    camera, image_bytes, f"отброшено по качеству: {reason}", sent_at
+                )
+                return
+
+            # Агрегация: усредняем эмбеддинг основного лица по нескольким кадрам.
+            embedding = self._aggregate(camera, primary["embedding"])
+            match = self._face_store.match(embedding, self._threshold)
 
             self._record_debug(
-                camera, image_bytes, self._match_summary(embeddings, match), sent_at
+                camera,
+                image_bytes,
+                self._quality_summary(match, primary, sharpness, min_side),
+                sent_at,
             )
 
             if match is None:
@@ -298,9 +342,52 @@ class FaceUnlockCoordinator:
                 return
 
             name, distance = match
+            self._reset_window(camera)
             await self._unlock(camera, lock, name, distance, image_bytes)
         finally:
             self._busy.discard(camera)
+
+    # -- Качество кадра и агрегация -------------------------------------
+
+    def _quality_reason(self, face: dict, sharpness, min_side) -> str | None:
+        """Причина отбраковки кадра по качеству или None, если кадр годен.
+
+        Fail-open: если метрику посчитать не удалось (None) — по ней не отбраковываем.
+        """
+        confidence = face.get("confidence")
+        if self._min_face_px and min_side is not None and min_side < self._min_face_px:
+            return f"лицо {min_side}px < {self._min_face_px}px"
+        if (
+            self._min_confidence
+            and confidence is not None
+            and confidence < self._min_confidence
+        ):
+            return f"уверенность {confidence:.2f} < {self._min_confidence:.2f}"
+        if (
+            self._min_sharpness
+            and sharpness is not None
+            and sharpness < self._min_sharpness
+        ):
+            return f"резкость {sharpness:.0f} < {self._min_sharpness:.0f}"
+        return None
+
+    def _aggregate(self, camera: str, embedding: list[float]) -> list[float]:
+        """Усредняет эмбеддинг основного лица по нескольким последним кадрам."""
+        if self._aggregate_n <= 1:
+            return embedding
+        now = self._hass.loop.time()
+        window = self._embed_window.setdefault(
+            camera, deque(maxlen=self._aggregate_n)
+        )
+        window.append((now, embedding))
+        # Выбрасываем кадры за пределами временного окна.
+        while window and now - window[0][0] > _AGG_WINDOW_SEC:
+            window.popleft()
+        return _mean_normalized([emb for _, emb in window])
+
+    def _reset_window(self, camera: str) -> None:
+        """Сбрасывает окно агрегации камеры (смена субъекта/нет лица/открытие)."""
+        self._embed_window.pop(camera, None)
 
     async def _passes_prefilter(self, camera: str, image_bytes: bytes) -> bool:
         """Лёгкий фильтр перед DeepFace: движение + лицо в кадре.
@@ -359,6 +446,28 @@ class FaceUnlockCoordinator:
             else:
                 parts.append("→ эталонов нет")
         return ", ".join(parts)
+
+    def _quality_summary(self, match, face: dict, sharpness, min_side) -> str:
+        """Результат распознавания + метрики качества для отладочной галереи.
+
+        Метрики (размер, уверенность, резкость) выводятся, чтобы по галерее было
+        видно реальные значения и удобно подобрать пороги качество-фильтра.
+        """
+        if not self._debug:
+            return ""
+        # nearest() принимает список эмбеддингов — передаём агрегированный.
+        base = self._match_summary([face["embedding"]], match)
+        metrics = []
+        if min_side is not None:
+            metrics.append(f"{min_side}px")
+        confidence = face.get("confidence")
+        if confidence is not None:
+            metrics.append(f"conf {confidence:.2f}")
+        if sharpness is not None:
+            metrics.append(f"sharp {sharpness:.0f}")
+        if self._aggregate_n > 1:
+            metrics.append(f"avg×{self._aggregate_n}")
+        return base + (" | " + ", ".join(metrics) if metrics else "")
 
     def _record_debug(
         self, camera: str, image_bytes: bytes, summary: str, sent_at: float
@@ -425,3 +534,31 @@ class FaceUnlockCoordinator:
             title="Росдомофон: авто-открытие по лицу 👤🔓",
             notification_id=f"rosdomofon_face_{camera}",
         )
+
+
+def _face_area(facial_area: dict | None) -> int:
+    """Площадь области лица (для выбора самого крупного лица в кадре)."""
+    if not facial_area:
+        return 0
+    try:
+        return int(facial_area["w"]) * int(facial_area["h"])
+    except (KeyError, TypeError, ValueError):
+        return 0
+
+
+def _mean_normalized(vectors: list[list[float]]) -> list[float]:
+    """Усредняет L2-нормированные эмбеддинги и нормирует результат.
+
+    Нормировка перед усреднением уравнивает вклад кадров независимо от их
+    «длины», результат снова нормируется — удобно для косинусного сравнения.
+    """
+    if len(vectors) == 1:
+        return vectors[0]
+    arr = np.asarray(vectors, dtype=np.float64)
+    norms = np.linalg.norm(arr, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    mean = (arr / norms).mean(axis=0)
+    mean_norm = np.linalg.norm(mean)
+    if mean_norm == 0:
+        return vectors[-1]
+    return (mean / mean_norm).tolist()

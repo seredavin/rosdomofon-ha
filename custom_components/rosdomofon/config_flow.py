@@ -19,6 +19,7 @@ from . import deepface_client
 from .const import (
     CLIENT_ID,
     COMPANY_NAME,
+    CONF_AGGREGATE,
     CONF_ANTISPOOF,
     CONF_CAMERAS,
     CONF_COOLDOWN,
@@ -26,14 +27,21 @@ from .const import (
     CONF_DEEPFACE_URL,
     CONF_DETECTOR,
     CONF_INTERVAL,
+    CONF_MIN_CONFIDENCE,
+    CONF_MIN_FACE_PX,
+    CONF_MIN_SHARPNESS,
     CONF_MODEL,
     CONF_PREFILTER,
     CONF_THRESHOLD,
+    DEFAULT_AGGREGATE,
     DEFAULT_ANTISPOOF,
     DEFAULT_COOLDOWN,
     DEFAULT_DEBUG,
     DEFAULT_DETECTOR,
     DEFAULT_INTERVAL,
+    DEFAULT_MIN_CONFIDENCE,
+    DEFAULT_MIN_FACE_PX,
+    DEFAULT_MIN_SHARPNESS,
     DEFAULT_MODEL,
     DEFAULT_PREFILTER,
     DEFAULT_THRESHOLD,
@@ -266,6 +274,36 @@ class RosdomofonOptionsFlow(config_entries.OptionsFlow):
                 selector.NumberSelectorConfig(
                     min=0.1, max=0.6, step=0.01, mode=selector.NumberSelectorMode.BOX
                 )
+            ),
+            vol.Optional(
+                CONF_MIN_FACE_PX,
+                default=opts.get(CONF_MIN_FACE_PX, DEFAULT_MIN_FACE_PX),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0, max=300, step=5, mode=selector.NumberSelectorMode.BOX
+                )
+            ),
+            vol.Optional(
+                CONF_MIN_SHARPNESS,
+                default=opts.get(CONF_MIN_SHARPNESS, DEFAULT_MIN_SHARPNESS),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0, max=2000, step=10, mode=selector.NumberSelectorMode.BOX
+                )
+            ),
+            vol.Optional(
+                CONF_MIN_CONFIDENCE,
+                default=opts.get(CONF_MIN_CONFIDENCE, DEFAULT_MIN_CONFIDENCE),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0, max=1, step=0.05, mode=selector.NumberSelectorMode.BOX
+                )
+            ),
+            vol.Optional(
+                CONF_AGGREGATE,
+                default=opts.get(CONF_AGGREGATE, DEFAULT_AGGREGATE),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(min=1, max=7, step=1)
             ),
             vol.Optional(
                 CONF_INTERVAL,
